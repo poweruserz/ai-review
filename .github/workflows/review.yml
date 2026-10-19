@@ -19,8 +19,8 @@ on:
         type: string
         default: '"ubuntu-latest"'
       codex-fixes:
-        # Off because, as of 2026-10-19, GitHub @codex fix requests need a legacy Codex Cloud environment:
-        # without one Codex asks for it, and with only a new-style environment it runs a review instead.
+        # Off because, as of 2026-10-19, Codex cannot push to the PR branch: with a Legacy Codex Cloud environment
+        # the task fixes and commits, then reports no Git remote to push to (openai/codex#38351).
         description: Ask Codex (as the owner, via CODEX_TRIGGER_PAT) to rule on findings and push fixes, instead of leaving them to the Claude session.
         type: boolean
         default: false

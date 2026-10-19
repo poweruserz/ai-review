@@ -1,24 +1,24 @@
 #!/usr/bin/env bash
-# Enrols one repository in the AI review pipeline: its two secrets, a dreamfyre runner for a private
+# Enrols one repository in the AI review pipeline: its ZAI_API_KEY secret, a dreamfyre runner for a private
 # repository, and a pull request that adds caller.yml as .github/workflows/ai-review.yml.
 # Run from the owner's machine (needs gh and `wsl -e ssh dreamfyre`). Every step is skipped when done,
 # so re-running is safe.
-# Usage: ZAI_KEY_FILE=<file> CODEX_PAT_FILE=<file> scripts/enrol.sh <repo>
+# Usage: ZAI_KEY_FILE=<file> scripts/enrol.sh <repo>
 set -euo pipefail
 OWNER=poweruserz
 REPO="${1:-}"
 [[ "$REPO" =~ ^[A-Za-z0-9._-]+$ && "$REPO" != .* || "$REPO" == .github ]] || { echo "usage: enrol.sh <repo>" >&2; exit 1; }
-: "${ZAI_KEY_FILE:?set ZAI_KEY_FILE}" "${CODEX_PAT_FILE:?set CODEX_PAT_FILE}"
+: "${ZAI_KEY_FILE:?set ZAI_KEY_FILE}"
 here="$(cd "$(dirname "$0")" && pwd)"
 say() { echo "[$REPO] $*"; }
 
 IFS=$'\t' read -r private fork archived branch < <(gh api "repos/$OWNER/$REPO" --jq '[.private, .fork, .archived, .default_branch] | @tsv')
 if [ "$fork" = true ] || [ "$archived" = true ]; then say "fork or archived, skipped"; exit 0; fi
 
-# Secrets go from the files straight to gh and are never printed.
+# The key goes from the file straight to gh and is never printed. CODEX_TRIGGER_PAT is only for
+# codex-fixes, which is off, so the owner's PAT is not copied into every repository.
 tr -d '\r\n' < "$ZAI_KEY_FILE" | gh secret set ZAI_API_KEY -R "$OWNER/$REPO"
-tr -d '\r\n' < "$CODEX_PAT_FILE" | gh secret set CODEX_TRIGGER_PAT -R "$OWNER/$REPO"
-say "secrets set"
+say "secret set"
 
 if [ "$private" = true ]; then
   runner='["self-hosted","dreamfyre"]'

@@ -13,19 +13,19 @@ Reusable GitHub Actions workflow that puts every pull request in poweruserz's re
 | `failure` | findings to rule on | reads Codex's inline comments and the GLM comment, fixes the real ones, pushes; each push is a new round |
 | `error` | the pipeline could not finish | stops and reports |
 
-With `codex-fixes: true` the coordinator instead asks Codex, using the owner's token because Codex ignores bot accounts, to rule on the findings and push fixes, for up to `max-rounds` rounds. It is off because GitHub `@codex` fix requests currently need a legacy Codex Cloud environment. Without one, Codex asks for it. With only a new-style environment, it runs a review instead (2026-10-19).
+With `codex-fixes: true` the coordinator instead asks Codex, using the owner's token because Codex ignores bot accounts, to rule on the findings and push fixes, for up to `max-rounds` rounds. It is off because, as tested on 2026-10-19, Codex cannot push a fix to the pull request branch. GitHub `@codex` fix requests need a Codex Cloud (Legacy) environment for the repository. Without one, Codex asks for it, and a new-style environment alone gets a review instead. With a Legacy environment the task fixes, tests and commits the change, then reports "no configured Git remote or push destination" ([openai/codex#38351](https://github.com/openai/codex/issues/38351)).
 
 ## Enrol a repository
 
 From the owner's machine (it needs `gh` and `wsl -e ssh dreamfyre`):
 
 ```sh
-ZAI_KEY_FILE=<file> CODEX_PAT_FILE=<file> scripts/enrol.sh <repo>
+ZAI_KEY_FILE=<file> scripts/enrol.sh <repo>
 ```
 
 The script does three things. Each step is skipped when it is already done, so it is safe to re-run.
 
-- It sets the secrets `ZAI_API_KEY` (a GLM Coding Plan key) and `CODEX_TRIGGER_PAT` (a fine-grained PAT with Issues and Pull requests read and write). The values go from the files straight to `gh`.
+- It sets the secret `ZAI_API_KEY` (a GLM Coding Plan key), which goes from the file straight to `gh`. `CODEX_TRIGGER_PAT` (a fine-grained PAT with Issues and Pull requests read and write) is added only to repositories that turn on `codex-fixes`.
 - For a private repository, it registers a dreamfyre runner through `scripts/dreamfyre-runner.sh` and the host's `register.sh`. Public repositories use GitHub-hosted runners, which are free for them; the dreamfyre runner serves private repositories only.
 - It opens a pull request that adds [`caller.yml`](caller.yml) as `.github/workflows/ai-review.yml`, with the runner set for the repository's visibility.
 
