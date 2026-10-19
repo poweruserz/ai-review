@@ -36,10 +36,10 @@ function threadsFromState(comments) {
   return m && JSON.parse(m[1]).code_review?.has_unresolved_findings ? [thread(false)] : [];
 }
 
-async function run(comments, { hasPat = 'true', maxRounds = '3', asker = 'o', threads, codexFixes = 'true' } = {}) {
+async function run(comments, { hasPat = 'true', maxRounds = '3', asker = 'o', threads, codexFixes = 'true', author = 'o' } = {}) {
   const statuses = [];
   const outputs = {};
-  const pr = { state: 'open', draft: false, head: { sha: HEAD, repo: { full_name: 'o/r' } } };
+  const pr = { state: 'open', draft: false, user: { login: author }, head: { sha: HEAD, repo: { full_name: 'o/r' } } };
   const nodes = threads ?? threadsFromState(comments);
   const github = {
     paginate: async () => comments,
@@ -59,6 +59,11 @@ test('both clean on the head → success', async () => {
   const r = await run([codexState({ code_review: review(HEAD, false), security_review: review(HEAD, false) }), glmComment(HEAD, 'clean', 'VERDICT: CLEAN')]);
   assert.deepEqual(r.statuses, ['success: Codex and GLM found nothing']);
   assert.equal(r.outputs.ask, undefined);
+});
+
+test('Dependabot pull request → no status, since GLM never reviews it', async () => {
+  const r = await run([codexState({ code_review: review(HEAD, false), security_review: review(HEAD, false) })], { author: 'dependabot[bot]' });
+  assert.deepEqual(r.statuses, []);
 });
 
 test('GLM not in yet → pending', async () => {
