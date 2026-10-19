@@ -249,7 +249,8 @@ jobs:
               if (m) try { codex = JSON.parse(m[1]); } catch {}
             }
             const onHead = r => r?.commit_sha === head && r.status === 'completed';
-            const codexDone = onHead(codex?.code_review) && (!codex.security_review || onHead(codex.security_review));
+            const codeReviewed = onHead(codex?.code_review);
+            const codexDone = codeReviewed && (!codex.security_review || onHead(codex.security_review));
             // Codex fixes has_unresolved_findings when its review runs (and it can be null), so threads resolved
             // afterwards leave it stale: count the Codex review threads that are still open instead.
             const threadsQuery = `query($owner: String!, $repo: String!, $pr: Int!, $after: String) {
@@ -263,7 +264,9 @@ jobs:
               after = page.pageInfo.endCursor;
             }
             const security = codex?.security_review;
-            const codexFindings = codexDone && (openCodexThreads > 0 || (security?.commit_sha === head && security.has_unresolved_findings === true));
+            // Code review findings already mean a fix and a new push, so they do not wait for a security review still
+            // running on this head (on meteosfer#45 it ran for over 40 minutes); a clean result still waits for both.
+            const codexFindings = codeReviewed && (openCodexThreads > 0 || (security?.commit_sha === head && security.has_unresolved_findings === true));
 
             const glm = comments.find(c => c.user.login === 'github-actions[bot]' && c.body.startsWith('<!-- ai-review:glm '));
             const g = glm && /^<!-- ai-review:glm sha=([0-9a-f]+) verdict=(\w+) -->/.exec(glm.body);
@@ -281,8 +284,9 @@ jobs:
               return;
             }
 
-            if (!codexDone || !glmVerdict) {
-              await status('pending', `waiting for ${[!codexDone && 'Codex', !glmVerdict && 'GLM'].filter(Boolean).join(' and ')}`);
+            const codexWaiting = !codexDone && !codexFindings;
+            if (codexWaiting || !glmVerdict) {
+              await status('pending', `waiting for ${[codexWaiting && 'Codex', !glmVerdict && 'GLM'].filter(Boolean).join(' and ')}`);
               return;
             }
             if (!codexFindings && glmVerdict !== 'findings') {
