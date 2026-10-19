@@ -166,13 +166,22 @@ jobs:
       statuses: write
     env:
       PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
+      HAS_PAT: ${{ secrets.CODEX_TRIGGER_PAT != '' }}
     steps:
+      - name: Resolve the account that asks Codex
+        id: asker
+        if: env.HAS_PAT == 'true'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          github-token: ${{ secrets.CODEX_TRIGGER_PAT }}
+          script: core.setOutput('login', (await github.rest.users.getAuthenticated()).data.login);
+
       - name: Decide
         id: decide
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           MAX_ROUNDS: ${{ inputs.max-rounds }}
-          HAS_PAT: ${{ secrets.CODEX_TRIGGER_PAT != '' }}
+          ASKER: ${{ steps.asker.outputs.login }}
         with:
           script: |
             const { owner, repo } = context.repo;
@@ -201,8 +210,8 @@ jobs:
             const glmVerdict = g?.[1] === head ? g[2] : null;
 
             const askRe = /<!-- ai-review:coord sha=([0-9a-f]+) round=\d+ -->/;
-            // Only the owner's token writes these; anyone can comment on a public repository.
-            const asks = comments.filter(c => c.user.login === owner && askRe.test(c.body));
+            // Only CODEX_TRIGGER_PAT's account writes these; anyone can comment on a public repository.
+            const asks = comments.filter(c => c.user.login === process.env.ASKER && askRe.test(c.body));
             // Codex was already asked about this head; its push starts the next round.
             if (asks.some(c => askRe.exec(c.body)[1] === head)) return;
 

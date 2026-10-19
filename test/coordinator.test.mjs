@@ -27,7 +27,7 @@ const glmComment = (sha, verdict, text = 'VERDICT: FINDINGS\n1. [P1] a.js:1 — 
 });
 const ask = (sha, round, login = 'o') => ({ user: { login }, body: `@codex ...\n<!-- ai-review:coord sha=${sha} round=${round} -->` });
 
-async function run(comments, { hasPat = 'true', maxRounds = '3' } = {}) {
+async function run(comments, { hasPat = 'true', maxRounds = '3', asker = 'o' } = {}) {
   const statuses = [];
   const outputs = {};
   const pr = { state: 'open', draft: false, head: { sha: HEAD, repo: { full_name: 'o/r' } } };
@@ -39,7 +39,7 @@ async function run(comments, { hasPat = 'true', maxRounds = '3' } = {}) {
       repos: { createCommitStatus: async (s) => statuses.push(`${s.state}: ${s.description}`) },
     },
   };
-  Object.assign(process.env, { PR_NUMBER: '7', MAX_ROUNDS: maxRounds, HAS_PAT: hasPat });
+  Object.assign(process.env, { PR_NUMBER: '7', MAX_ROUNDS: maxRounds, HAS_PAT: hasPat, ASKER: asker });
   await decide(github, { repo: { owner: 'o', repo: 'r' } }, { setOutput: (k, v) => { outputs[k] = v; } });
   return { statuses, outputs };
 }
@@ -94,6 +94,11 @@ test('markers from anyone but the owner are ignored', async () => {
   const r = await run([codexState({ code_review: review(HEAD, true) }), glmComment(HEAD, 'clean'), ask(HEAD, 1, 'stranger'), ask(OLD, 2, 'stranger'), ask(OLD, 3, 'stranger')]);
   assert.equal(r.outputs.ask, 'true');
   assert.match(r.outputs.body, /round=1 -->$/);
+});
+
+test("rounds follow the token's account even when it is not the repository owner", async () => {
+  const r = await run([codexState({ code_review: review(HEAD, true) }), glmComment(HEAD, 'clean'), ask(OLD, 1, 'bot-user'), ask(OLD, 2, 'bot-user'), ask(OLD, 3, 'bot-user')], { asker: 'bot-user' });
+  assert.deepEqual(r.statuses, ['failure: findings remain after 3 Codex rounds']);
 });
 
 test('missing token → failure instead of a silent stall', async () => {
