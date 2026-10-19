@@ -46,7 +46,7 @@ jobs:
       && !github.event.pull_request.draft
       && github.actor != 'dependabot[bot]'
     runs-on: ${{ github.event.repository.private && fromJSON('["self-hosted","dreamfyre-review"]') || 'ubuntu-latest' }}
-    timeout-minutes: 25
+    timeout-minutes: 45 # GLM at max effort takes ~20 s a turn, and --max-turns is 100
     concurrency:
       group: ai-review-glm-${{ github.repository }}-${{ github.event.pull_request.number }}
       cancel-in-progress: true
@@ -98,12 +98,14 @@ jobs:
             --allowedTools Read,Grep,Glob
             --disallowedTools "mcp__*"
             --strict-mcp-config
-            --max-turns 40
+            --max-turns 100
           prompt: |
             Review pull request #${{ github.event.pull_request.number }} in ${{ github.repository }} at commit ${{ github.event.pull_request.head.sha }}.
             The repository is checked out at that commit, and the full diff against the base is in ./.ai-review.diff.
 
             Read the diff, then read as much surrounding code as you need to judge each change.
+            On a large diff, open only the files where a change could cause one of the problems below:
+            you have a limited number of turns, and a review that runs out of them before the verdict is lost.
             Report only consequential problems: wrong results, security holes, data loss or exposure,
             swallowed errors, races, and behavior changes that look unintended. No style, naming,
             formatting, documentation or "could be simpler" remarks. Follow any "## Code Review Rules"
