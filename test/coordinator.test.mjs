@@ -25,7 +25,7 @@ const glmComment = (sha, verdict, text = 'VERDICT: FINDINGS\n1. [P1] a.js:1 — 
   user: { login: 'github-actions[bot]' },
   body: `<!-- ai-review:glm sha=${sha} verdict=${verdict} -->\n### GLM review\nCommit \`${sha.slice(0, 7)}\`\n\n${text}`,
 });
-const ask = (sha, round) => ({ user: { login: 'poweruserz' }, body: `@codex ...\n<!-- ai-review:coord sha=${sha} round=${round} -->` });
+const ask = (sha, round, login = 'o') => ({ user: { login }, body: `@codex ...\n<!-- ai-review:coord sha=${sha} round=${round} -->` });
 
 async function run(comments, { hasPat = 'true', maxRounds = '3' } = {}) {
   const statuses = [];
@@ -88,6 +88,12 @@ test('already asked about this head → does nothing', async () => {
 test('findings after three rounds → failure', async () => {
   const r = await run([codexState({ code_review: review(HEAD, true) }), glmComment(HEAD, 'clean'), ask(OLD, 1), ask(OLD, 2), ask(OLD, 3)]);
   assert.deepEqual(r.statuses, ['failure: findings remain after 3 Codex rounds']);
+});
+
+test('markers from anyone but the owner are ignored', async () => {
+  const r = await run([codexState({ code_review: review(HEAD, true) }), glmComment(HEAD, 'clean'), ask(HEAD, 1, 'stranger'), ask(OLD, 2, 'stranger'), ask(OLD, 3, 'stranger')]);
+  assert.equal(r.outputs.ask, 'true');
+  assert.match(r.outputs.body, /round=1 -->$/);
 });
 
 test('missing token → failure instead of a silent stall', async () => {

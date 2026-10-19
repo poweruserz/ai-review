@@ -201,7 +201,8 @@ jobs:
             const glmVerdict = g?.[1] === head ? g[2] : null;
 
             const askRe = /<!-- ai-review:coord sha=([0-9a-f]+) round=\d+ -->/;
-            const asks = comments.filter(c => askRe.test(c.body));
+            // Only the owner's token writes these; anyone can comment on a public repository.
+            const asks = comments.filter(c => c.user.login === owner && askRe.test(c.body));
             // Codex was already asked about this head; its push starts the next round.
             if (asks.some(c => askRe.exec(c.body)[1] === head)) return;
 
