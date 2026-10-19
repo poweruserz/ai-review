@@ -28,14 +28,24 @@ const glmComment = (sha, verdict, text = 'VERDICT: FINDINGS\n1. [P1] a.js:1 — 
 const ask = (sha, round, login = 'o', created_at = '2026-10-19T06:39:51Z') => ({ user: { login }, created_at, body: `@codex ...\n<!-- aifix sha=${sha} round=${round} -->` });
 const codexReply = (body, created_at = '2026-10-19T06:40:02Z') => ({ user: { login: 'chatgpt-codex-connector[bot]' }, created_at, body });
 
-async function run(comments, { hasPat = 'true', maxRounds = '3', asker = 'o', inline = [], codexFixes = 'true' } = {}) {
+const thread = (isResolved, login = 'chatgpt-codex-connector') => ({ isResolved, comments: { nodes: [{ author: { login } }] } });
+
+// Without explicit threads, an unresolved code-review flag in the Codex state stands for one open Codex thread.
+function threadsFromState(comments) {
+  const m = comments.map(c => /codex-review-state:v1 (\{.*?\}) -->/s.exec(c.body ?? '')).find(Boolean);
+  return m && JSON.parse(m[1]).code_review?.has_unresolved_findings ? [thread(false)] : [];
+}
+
+async function run(comments, { hasPat = 'true', maxRounds = '3', asker = 'o', threads, codexFixes = 'true' } = {}) {
   const statuses = [];
   const outputs = {};
   const pr = { state: 'open', draft: false, head: { sha: HEAD, repo: { full_name: 'o/r' } } };
+  const nodes = threads ?? threadsFromState(comments);
   const github = {
-    paginate: async (fn) => (fn === github.rest.pulls.listReviewComments ? inline : comments),
+    paginate: async () => comments,
+    graphql: async () => ({ repository: { pullRequest: { reviewThreads: { pageInfo: { hasNextPage: false }, nodes } } } }),
     rest: {
-      pulls: { get: async () => ({ data: pr }), listReviewComments: () => {} },
+      pulls: { get: async () => ({ data: pr }) },
       issues: { listComments: () => {} },
       repos: { createCommitStatus: async (s) => statuses.push(`${s.state}: ${s.description}`) },
     },
@@ -80,17 +90,22 @@ test('findings → asks Codex once, as round 1, with the GLM text', async () => 
   assert.deepEqual(r.statuses, ['pending: round 1: Codex is ruling on the findings']);
 });
 
-test('unknown (null) Codex result with an inline Codex comment on the head → treated as findings', async () => {
-  const unknown = { ...review(HEAD, false), has_any_findings: null, has_unresolved_findings: null };
-  const inline = [{ user: { login: 'chatgpt-codex-connector[bot]' }, original_commit_id: HEAD }];
-  const r = await run([codexState({ code_review: unknown, security_review: review(HEAD, false) }), glmComment(HEAD, 'clean')], { inline });
-  assert.equal(r.outputs.ask, 'true');
+test('a stale "unresolved" flag is ignored once every Codex thread is resolved', async () => {
+  const r = await run([codexState({ code_review: review(HEAD, true), security_review: review(HEAD, false) }), glmComment(HEAD, 'clean')],
+    { threads: [thread(true), thread(true)], codexFixes: 'false' });
+  assert.deepEqual(r.statuses, ['success: Codex and GLM found nothing']);
 });
 
-test('unknown (null) Codex result with Codex comments only on older heads → clean', async () => {
+test('an open Codex thread counts even when the flag is null', async () => {
   const unknown = { ...review(HEAD, false), has_any_findings: null, has_unresolved_findings: null };
-  const inline = [{ user: { login: 'chatgpt-codex-connector[bot]' }, original_commit_id: OLD }];
-  const r = await run([codexState({ code_review: unknown, security_review: review(HEAD, false) }), glmComment(HEAD, 'clean')], { inline });
+  const r = await run([codexState({ code_review: unknown, security_review: review(HEAD, false) }), glmComment(HEAD, 'clean')],
+    { threads: [thread(true), thread(false)], codexFixes: 'false' });
+  assert.deepEqual(r.statuses, ['failure: findings to rule on from Codex']);
+});
+
+test("other reviewers' open threads are not Codex findings", async () => {
+  const r = await run([codexState({ code_review: review(HEAD, false) }), glmComment(HEAD, 'clean')],
+    { threads: [thread(false, 'poweruserz')], codexFixes: 'false' });
   assert.deepEqual(r.statuses, ['success: Codex and GLM found nothing']);
 });
 
