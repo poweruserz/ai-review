@@ -81,9 +81,9 @@ test('security review still on an older head → waiting for Codex', async () =>
   assert.deepEqual(r.statuses, ['pending: waiting for Codex']);
 });
 
-test('code review findings → failure without waiting for a security review still running', async () => {
+test('code review findings → failure without waiting for a security review still running, which it names', async () => {
   const r = await run([codexState({ code_review: review(HEAD, true), security_review: review(HEAD, null, 'running') }), glmComment(HEAD, 'clean')], { codexFixes: 'false' });
-  assert.deepEqual(r.statuses, ['failure: findings to rule on from Codex']);
+  assert.deepEqual(r.statuses, ['failure: findings to rule on from Codex; Codex security review still running']);
 });
 
 test('a clean code review still waits for the security review', async () => {

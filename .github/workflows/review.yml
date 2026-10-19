@@ -295,7 +295,8 @@ jobs:
             }
             const sources = [codexFindings && 'Codex', glmVerdict === 'findings' && 'GLM'].filter(Boolean).join(' and ');
             if (process.env.CODEX_FIXES !== 'true') {
-              await status('failure', `findings to rule on from ${sources}`);
+              // The session must not treat an all-rejected head as clean while this review can still add findings.
+              await status('failure', `findings to rule on from ${sources}${codexDone ? '' : '; Codex security review still running'}`);
               return;
             }
             const round = asks.length + 1;
