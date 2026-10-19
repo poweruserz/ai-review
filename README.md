@@ -17,47 +17,23 @@ With `codex-fixes: true` the coordinator instead asks Codex, using the owner's t
 
 ## Enrol a repository
 
-Add `.github/workflows/ai-review.yml`:
+From the owner's machine (it needs `gh` and `wsl -e ssh dreamfyre`):
 
-```yaml
-name: AI review
-
-on:
-  pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
-  issue_comment: # Codex's review-state comment wakes the coordinator; runs from the default branch only
-    types: [created, edited]
-
-permissions:
-  contents: read
-  issues: write
-  pull-requests: write
-  statuses: write
-
-jobs:
-  ai-review:
-    # Second gate next to the reusable workflow's own: other comments never start it.
-    if: github.event_name == 'pull_request' || github.event.comment.user.login == 'chatgpt-codex-connector[bot]'
-    # Tracks @main on purpose (owner's decision, 2026-10-19): the logic is maintained once for every repository.
-    # Only this account can push to poweruserz/ai-review, and it can already write here directly, so a SHA pin
-    # would cost one PR per repository per update without stopping a real attacker. Only two secrets go there.
-    uses: poweruserz/ai-review/.github/workflows/review.yml@main
-    with:
-      runner: '["self-hosted","dreamfyre"]' # private repositories; public ones use '"ubuntu-latest"'
-    secrets: # only these two, never `inherit`
-      ZAI_API_KEY: ${{ secrets.ZAI_API_KEY }}
-      CODEX_TRIGGER_PAT: ${{ secrets.CODEX_TRIGGER_PAT }}
+```sh
+ZAI_KEY_FILE=<file> CODEX_PAT_FILE=<file> scripts/enrol.sh <repo>
 ```
 
-The caller tracks `@main`, so a change here reaches every repository at once. That is the point of keeping the logic in one place. The cost is that a push to this repository's `main` runs with the two secrets above in every enrolled repository, so treat `main` here like production code.
+The script does three things. Each step is skipped when it is already done, so it is safe to re-run.
 
-Then set up the secrets and the runner:
+- It sets the secrets `ZAI_API_KEY` (a GLM Coding Plan key) and `CODEX_TRIGGER_PAT` (a fine-grained PAT with Issues and Pull requests read and write). The values go from the files straight to `gh`.
+- For a private repository, it registers a dreamfyre runner through `scripts/dreamfyre-runner.sh` and the host's `register.sh`. Public repositories use GitHub-hosted runners, which are free for them; the dreamfyre runner serves private repositories only.
+- It opens a pull request that adds [`caller.yml`](caller.yml) as `.github/workflows/ai-review.yml`, with the runner set for the repository's visibility.
 
-- Add the secrets `ZAI_API_KEY` (a GLM Coding Plan key) and `CODEX_TRIGGER_PAT` (a fine-grained PAT that only needs Issues: read and write).
-- For a private repository, register a dreamfyre runner for it.
-- Make sure the repository has Codex code review enabled and a Codex cloud environment.
+Codex code review must also be enabled for the repository in chatgpt.com/settings/code-review.
 
-The coordinator acts only once the caller is on the default branch, because `issue_comment` workflows run from there.
+The coordinator acts on Codex's comments only once the caller is on the default branch, because `issue_comment` workflows run from there.
+
+The caller tracks `@main`, so a change here reaches every repository at once. That is the point of keeping the logic in one place. The cost is that a push to this repository's `main` runs with those two secrets in every enrolled repository, so treat `main` here like production code.
 
 ## Test
 

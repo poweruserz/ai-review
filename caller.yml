@@ -1,0 +1,31 @@
+name: AI review
+
+# Codex and GLM review every pull request head, and a coordinator asks Codex to rule on their
+# findings; see https://github.com/poweruserz/ai-review. Fork pull requests never reach the
+# persistent runner (the reusable workflow skips them).
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  issue_comment: # Codex's review-state comment wakes the coordinator; runs from the default branch only
+    types: [created, edited]
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+  statuses: write
+
+jobs:
+  ai-review:
+    # Second gate next to the reusable workflow's own: other comments never start it.
+    if: github.event_name == 'pull_request' || github.event.comment.user.login == 'chatgpt-codex-connector[bot]'
+    # Tracks @main on purpose (owner's decision, 2026-10-19): the logic is maintained once for every repository.
+    # Only this account can push to poweruserz/ai-review, and it can already write here directly, so a SHA pin
+    # would cost one PR per repository per update without stopping a real attacker. Only two secrets go there.
+    uses: poweruserz/ai-review/.github/workflows/review.yml@main
+    with:
+      runner: '["self-hosted","dreamfyre"]'
+    secrets: # only these two, never `inherit`
+      ZAI_API_KEY: ${{ secrets.ZAI_API_KEY }}
+      CODEX_TRIGGER_PAT: ${{ secrets.CODEX_TRIGGER_PAT }}
