@@ -244,7 +244,7 @@ jobs:
             const g = glm && /^<!-- ai-review:glm sha=([0-9a-f]+) verdict=(\w+) -->/.exec(glm.body);
             const glmVerdict = g?.[1] === head ? g[2] : null;
 
-            const askRe = /<!-- ai-review:coord sha=([0-9a-f]+) round=\d+ -->/;
+            const askRe = /<!-- aifix sha=([0-9a-f]+) round=\d+ -->/;
             // Only CODEX_TRIGGER_PAT's account writes these; anyone can comment on a public repository.
             const asks = comments.filter(c => c.user.login === process.env.ASKER && askRe.test(c.body));
             // Codex was already asked about this head; its push starts the next round.
@@ -267,29 +267,30 @@ jobs:
               await status('failure', 'CODEX_TRIGGER_PAT secret is missing');
               return;
             }
+            // Codex treats a mention containing "review" as a review request, not a task, so the word never appears here.
             const glmText = {
-              findings: glm.body.split('\n').slice(3).join('\n').trim(),
+              findings: glm.body.split('\n').slice(3).join('\n').trim().replace(/review/gi, 'check'),
               clean: '_GLM found nothing on this commit._',
-              unavailable: '_GLM did not produce a review for this commit._',
+              unavailable: '_GLM produced no result for this commit._',
             }[glmVerdict];
             core.setOutput('body', [
-              `@codex You are the final decision maker for this pull request at commit ${head.slice(0, 7)}.`,
+              `@codex Fix this pull request at commit ${head.slice(0, 7)}. You decide which findings are real.`,
               '',
-              `Two automated reviews ran on this commit: your own code and security reviews${codexFindings ? '' : ' (no unresolved findings)'}, and the GLM review quoted below.`,
+              `Findings to rule on: your own inline comments on this commit${codexFindings ? '' : ' (none unresolved)'} and the GLM findings below.`,
               '',
-              '1. Check every finding from both against the code. Reject false positives.',
-              "2. Fix every real one on this branch, run the project's checks (see AGENTS.md), and push.",
+              '1. Check each finding against the code. Reject false positives.',
+              "2. Fix every real one on this branch, run the project's checks (see AGENTS.md), and push one commit.",
               '3. Reply with one line per finding: fixed, or rejected with the reason.',
               '',
               'Do not tag anyone.',
               '',
-              '<details><summary>GLM review</summary>',
+              '<details><summary>GLM findings</summary>',
               '',
               glmText,
               '',
               '</details>',
               '',
-              `<!-- ai-review:coord sha=${head} round=${round} -->`,
+              `<!-- aifix sha=${head} round=${round} -->`,
             ].join('\n'));
             core.setOutput('ask', 'true');
             await status('pending', `round ${round}: Codex is ruling on the findings`);

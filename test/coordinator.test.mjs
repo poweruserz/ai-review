@@ -25,7 +25,7 @@ const glmComment = (sha, verdict, text = 'VERDICT: FINDINGS\n1. [P1] a.js:1 — 
   user: { login: 'github-actions[bot]' },
   body: `<!-- ai-review:glm sha=${sha} verdict=${verdict} -->\n### GLM review\nCommit \`${sha.slice(0, 7)}\`\n\n${text}`,
 });
-const ask = (sha, round, login = 'o') => ({ user: { login }, body: `@codex ...\n<!-- ai-review:coord sha=${sha} round=${round} -->` });
+const ask = (sha, round, login = 'o') => ({ user: { login }, body: `@codex ...\n<!-- aifix sha=${sha} round=${round} -->` });
 
 async function run(comments, { hasPat = 'true', maxRounds = '3', asker = 'o', inline = [] } = {}) {
   const statuses = [];
@@ -73,9 +73,11 @@ test('no security review configured → code review alone decides', async () => 
 test('findings → asks Codex once, as round 1, with the GLM text', async () => {
   const r = await run([codexState({ code_review: review(HEAD, true), security_review: review(HEAD, false) }), glmComment(HEAD, 'findings')]);
   assert.equal(r.outputs.ask, 'true');
-  assert.match(r.outputs.body, /^@codex /);
+  assert.match(r.outputs.body, /^@codex Fix /);
   assert.match(r.outputs.body, /\[P1\] a\.js:1/);
-  assert.match(r.outputs.body, new RegExp(`<!-- ai-review:coord sha=${HEAD} round=1 -->$`));
+  assert.match(r.outputs.body, new RegExp(`<!-- aifix sha=${HEAD} round=1 -->$`));
+  // Codex starts a review instead of a fix task when the mention contains "review".
+  assert.doesNotMatch(r.outputs.body, /review/i);
   assert.deepEqual(r.statuses, ['pending: round 1: Codex is ruling on the findings']);
 });
 
