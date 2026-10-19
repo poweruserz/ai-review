@@ -28,7 +28,7 @@ const glmComment = (sha, verdict, text = 'VERDICT: FINDINGS\n1. [P1] a.js:1 — 
 const ask = (sha, round, login = 'o', created_at = '2026-10-19T06:39:51Z') => ({ user: { login }, created_at, body: `@codex ...\n<!-- aifix sha=${sha} round=${round} -->` });
 const codexReply = (body, created_at = '2026-10-19T06:40:02Z') => ({ user: { login: 'chatgpt-codex-connector[bot]' }, created_at, body });
 
-async function run(comments, { hasPat = 'true', maxRounds = '3', asker = 'o', inline = [] } = {}) {
+async function run(comments, { hasPat = 'true', maxRounds = '3', asker = 'o', inline = [], codexFixes = 'true' } = {}) {
   const statuses = [];
   const outputs = {};
   const pr = { state: 'open', draft: false, head: { sha: HEAD, repo: { full_name: 'o/r' } } };
@@ -40,7 +40,7 @@ async function run(comments, { hasPat = 'true', maxRounds = '3', asker = 'o', in
       repos: { createCommitStatus: async (s) => statuses.push(`${s.state}: ${s.description}`) },
     },
   };
-  Object.assign(process.env, { PR_NUMBER: '7', MAX_ROUNDS: maxRounds, HAS_PAT: hasPat, ASKER: asker });
+  Object.assign(process.env, { PR_NUMBER: '7', MAX_ROUNDS: maxRounds, HAS_PAT: hasPat, ASKER: asker, CODEX_FIXES: codexFixes });
   await decide(github, { repo: { owner: 'o', repo: 'r' } }, { setOutput: (k, v) => { outputs[k] = v; } });
   return { statuses, outputs };
 }
@@ -77,8 +77,6 @@ test('findings → asks Codex once, as round 1, with the GLM text', async () => 
   assert.match(r.outputs.body, /^@codex Fix /);
   assert.match(r.outputs.body, /\[P1\] a\.js:1/);
   assert.match(r.outputs.body, new RegExp(`<!-- aifix sha=${HEAD} round=1 -->$`));
-  // Codex starts a review instead of a fix task when the mention contains "review".
-  assert.doesNotMatch(r.outputs.body, /review/i);
   assert.deepEqual(r.statuses, ['pending: round 1: Codex is ruling on the findings']);
 });
 
@@ -102,10 +100,21 @@ test('already asked about this head → does nothing', async () => {
   assert.equal(r.outputs.ask, undefined);
 });
 
-test('Codex answers the fix request with an error → failure that says why', async () => {
+test('Claude fixes by default: findings → failure naming the sources, and Codex is not asked', async () => {
+  const r = await run([codexState({ code_review: review(HEAD, true), security_review: review(HEAD, false) }), glmComment(HEAD, 'findings')], { codexFixes: 'false' });
+  assert.deepEqual(r.statuses, ['failure: findings to rule on from Codex and GLM']);
+  assert.equal(r.outputs.ask, undefined);
+});
+
+test('Claude fixes by default: GLM-only findings name GLM alone', async () => {
+  const r = await run([codexState({ code_review: review(HEAD, false) }), glmComment(HEAD, 'findings')], { codexFixes: 'false' });
+  assert.deepEqual(r.statuses, ['failure: findings to rule on from GLM']);
+});
+
+test('Codex answers the fix request with an error → error that says why', async () => {
   const reply = codexReply('To use Codex here, [create an environment for this repo](https://chatgpt.com/codex/cloud/settings/environments).');
   const r = await run([codexState({ code_review: review(HEAD, true) }), glmComment(HEAD, 'findings'), ask(HEAD, 1), reply]);
-  assert.deepEqual(r.statuses, ['failure: Codex could not run the fix task: To use Codex here, create an environment for this repo.']);
+  assert.deepEqual(r.statuses, ['error: Codex could not run the fix task: To use Codex here, create an environment for this repo.']);
 });
 
 test('a Codex error from before the request does not end the round', async () => {
@@ -114,9 +123,9 @@ test('a Codex error from before the request does not end the round', async () =>
   assert.deepEqual(r.statuses, []);
 });
 
-test('findings after three rounds → failure', async () => {
+test('findings after three Codex rounds → error', async () => {
   const r = await run([codexState({ code_review: review(HEAD, true) }), glmComment(HEAD, 'clean'), ask(OLD, 1), ask(OLD, 2), ask(OLD, 3)]);
-  assert.deepEqual(r.statuses, ['failure: findings remain after 3 Codex rounds']);
+  assert.deepEqual(r.statuses, ['error: findings remain after 3 Codex rounds']);
 });
 
 test('markers from anyone but the owner are ignored', async () => {
@@ -127,10 +136,10 @@ test('markers from anyone but the owner are ignored', async () => {
 
 test("rounds follow the token's account even when it is not the repository owner", async () => {
   const r = await run([codexState({ code_review: review(HEAD, true) }), glmComment(HEAD, 'clean'), ask(OLD, 1, 'bot-user'), ask(OLD, 2, 'bot-user'), ask(OLD, 3, 'bot-user')], { asker: 'bot-user' });
-  assert.deepEqual(r.statuses, ['failure: findings remain after 3 Codex rounds']);
+  assert.deepEqual(r.statuses, ['error: findings remain after 3 Codex rounds']);
 });
 
-test('missing token → failure instead of a silent stall', async () => {
+test('missing token → error instead of a silent stall', async () => {
   const r = await run([codexState({ code_review: review(HEAD, false) }), glmComment(HEAD, 'findings')], { hasPat: 'false' });
-  assert.deepEqual(r.statuses, ['failure: CODEX_TRIGGER_PAT secret is missing']);
+  assert.deepEqual(r.statuses, ['error: CODEX_TRIGGER_PAT secret is missing']);
 });

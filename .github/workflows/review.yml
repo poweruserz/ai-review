@@ -4,9 +4,10 @@ name: AI review
 #
 # Codex (the ChatGPT Codex Connector app) and GLM review every pushed head
 # independently. The coordinator waits until both have reported on the current
-# head, then either marks it clean (commit status `ai-review` = success) or asks
-# Codex, as the repository owner, to rule on every finding and push fixes.
-# Claude's session waits on that status before running its own security gate.
+# head and sets commit status `ai-review`: success (both clean), failure
+# (findings for the Claude session to rule on and fix), or error (the pipeline
+# itself could not finish). Claude's session acts on it, then runs its own
+# security gate before merging.
 
 on:
   workflow_call:
@@ -17,8 +18,14 @@ on:
           '"ubuntu-latest"' for public ones (the dreamfyre runner serves private repositories only).
         type: string
         default: '"ubuntu-latest"'
+      codex-fixes:
+        # Off because, as of 2026-10-19, GitHub @codex fix requests need a legacy Codex Cloud environment:
+        # without one Codex asks for it, and with only a new-style environment it runs a review instead.
+        description: Ask Codex (as the owner, via CODEX_TRIGGER_PAT) to rule on findings and push fixes, instead of leaving them to the Claude session.
+        type: boolean
+        default: false
       max-rounds:
-        description: Codex fix rounds before the coordinator reports failure.
+        description: Codex fix rounds before the coordinator reports an error (codex-fixes only).
         type: number
         default: 3
     secrets: # passed one by one, never `secrets: inherit`, so a change here can reach only these two
@@ -211,6 +218,7 @@ jobs:
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           MAX_ROUNDS: ${{ inputs.max-rounds }}
+          CODEX_FIXES: ${{ inputs.codex-fixes }}
           ASKER: ${{ steps.asker.outputs.login }}
         with:
           script: |
@@ -251,7 +259,7 @@ jobs:
             if (askedNow) {
               const failed = comments.find(c => c.user.login === 'chatgpt-codex-connector[bot]' && c.created_at > askedNow.created_at
                 && /create an environment|something went wrong|usage limit|try again later/i.test(c.body));
-              if (failed) await status('failure', `Codex could not run the fix task: ${failed.body.replace(/\[([^\]]*)\]\([^)]*\)/g, '$1').split('\n')[0]}`);
+              if (failed) await status('error', `Codex could not run the fix task: ${failed.body.replace(/\[([^\]]*)\]\([^)]*\)/g, '$1').split('\n')[0]}`);
               return;
             }
 
@@ -263,18 +271,22 @@ jobs:
               await status('success', glmVerdict === 'unavailable' ? 'Codex clean; GLM unavailable' : 'Codex and GLM found nothing');
               return;
             }
+            const sources = [codexFindings && 'Codex', glmVerdict === 'findings' && 'GLM'].filter(Boolean).join(' and ');
+            if (process.env.CODEX_FIXES !== 'true') {
+              await status('failure', `findings to rule on from ${sources}`);
+              return;
+            }
             const round = asks.length + 1;
             if (round > Number(process.env.MAX_ROUNDS)) {
-              await status('failure', `findings remain after ${asks.length} Codex rounds`);
+              await status('error', `findings remain after ${asks.length} Codex rounds`);
               return;
             }
             if (process.env.HAS_PAT !== 'true') {
-              await status('failure', 'CODEX_TRIGGER_PAT secret is missing');
+              await status('error', 'CODEX_TRIGGER_PAT secret is missing');
               return;
             }
-            // Codex treats a mention containing "review" as a review request, not a task, so the word never appears here.
             const glmText = {
-              findings: glm.body.split('\n').slice(3).join('\n').trim().replace(/review/gi, 'check'),
+              findings: glm.body.split('\n').slice(3).join('\n').trim(),
               clean: '_GLM found nothing on this commit._',
               unavailable: '_GLM produced no result for this commit._',
             }[glmVerdict];

@@ -1,15 +1,19 @@
 # ai-review
 
-Reusable GitHub Actions workflow that puts every pull request in poweruserz's repositories through two AI reviewers and lets Codex rule on their findings.
+Reusable GitHub Actions workflow that puts every pull request in poweruserz's repositories through two AI reviewers.
 
 1. **Codex** (the ChatGPT Codex Connector app) runs its code review and security review on every push. It is configured in chatgpt.com/settings/code-review, not here.
-2. **GLM** reviews the same head through [claude-code-action](https://github.com/anthropics/claude-code-action) pointed at Z.ai's Anthropic-compatible endpoint. It gets read-only tools.
-3. **The coordinator** is plain script logic, not a model. It waits until both have reported on the current head, then does one of three things:
-   - Marks the head clean with commit status `ai-review: success`.
-   - Asks Codex, using the owner's token because Codex ignores mentions from bot accounts, to rule on every finding and push fixes. Each push starts a new round.
-   - Gives up after `max-rounds` with `ai-review: failure`.
+2. **GLM** reviews the same head through [claude-code-action](https://github.com/anthropics/claude-code-action) pointed at Z.ai's Anthropic-compatible endpoint, at max reasoning effort. It gets read-only tools.
+3. **The coordinator** is plain script logic, not a model. It waits until both have reported on the current head and sets the commit status `ai-review`:
 
-The Claude session that opened the pull request waits on `ai-review`. On success it runs its own security gate before it merges and deploys.
+| Status | Meaning | What the Claude session that opened the PR does |
+| --- | --- | --- |
+| `pending` | reviews are still running | waits |
+| `success` | Codex and GLM found nothing | runs its security gate (Mythos 5.1), then merges and deploys |
+| `failure` | findings to rule on | reads Codex's inline comments and the GLM comment, fixes the real ones, pushes; each push is a new round |
+| `error` | the pipeline could not finish | stops and reports |
+
+With `codex-fixes: true` the coordinator instead asks Codex, using the owner's token because Codex ignores bot accounts, to rule on the findings and push fixes, for up to `max-rounds` rounds. It is off because GitHub `@codex` fix requests currently need a legacy Codex Cloud environment. Without one, Codex asks for it. With only a new-style environment, it runs a review instead (2026-10-19).
 
 ## Enrol a repository
 
