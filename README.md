@@ -23,11 +23,12 @@ From the owner's machine (it needs `gh` and `wsl -e ssh dreamfyre`):
 ZAI_KEY_FILE=<file> scripts/enrol.sh <repo>
 ```
 
-The script does three things. Each step is skipped when it is already done, so it is safe to re-run.
+The script does four things. Each step is skipped when it is already done, so it is safe to re-run.
 
 - It sets the secret `ZAI_API_KEY` (a GLM Coding Plan key), which goes from the file straight to `gh`. `CODEX_TRIGGER_PAT` (a fine-grained PAT with Issues and Pull requests read and write) is added only to repositories that turn on `codex-fixes`.
 - For a private repository, it registers a review-only dreamfyre runner through the host's root-owned `/usr/local/lib/gha-review/register.sh`. That runner runs as user `gha-review`, separate from the `gha` CI runners, has no Docker, and uses the label `dreamfyre-review`. Public repositories use GitHub-hosted runners, which are free for them; dreamfyre serves private repositories only.
 - It opens a pull request that adds [`caller.yml`](caller.yml) as `.github/workflows/ai-review.yml`. The reusable workflow picks the runner from the repository's visibility.
+- Run again after that pull request merges, it adds the ruleset [`scripts/ruleset.json`](scripts/ruleset.json). From then on, merging into the default branch needs `ai-review` success, set by GitHub Actions (app 15368), so a status that another account posts does not count. The ruleset never requires the branch to be up to date, so a merge does not trigger another review. Repository admins can bypass it (`gh pr merge --admin`, or the bypass box in the merge dialog). This is for Dependabot pull requests, which get no status, and for direct pushes. The ruleset waits for the merge because the enrolment pull request itself never gets a final status.
 
 Codex code review must also be enabled for the repository in chatgpt.com/settings/code-review.
 
