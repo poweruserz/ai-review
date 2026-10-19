@@ -227,6 +227,8 @@ jobs:
             const pull_number = Number(process.env.PR_NUMBER);
             const { data: pr } = await github.rest.pulls.get({ owner, repo, pull_number });
             if (pr.state !== 'open' || pr.draft || pr.head.repo?.full_name !== `${owner}/${repo}`) return;
+            // GLM never reviews Dependabot pull requests (no secrets there), so waiting for its verdict would hang.
+            if (pr.user?.login === 'dependabot[bot]') return;
             const head = pr.head.sha;
             const status = (state, description) => github.rest.repos.createCommitStatus({
               owner, repo, sha: head, state, context: 'ai-review', description: description.slice(0, 140),
