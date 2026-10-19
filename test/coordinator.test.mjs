@@ -27,14 +27,14 @@ const glmComment = (sha, verdict, text = 'VERDICT: FINDINGS\n1. [P1] a.js:1 — 
 });
 const ask = (sha, round, login = 'o') => ({ user: { login }, body: `@codex ...\n<!-- ai-review:coord sha=${sha} round=${round} -->` });
 
-async function run(comments, { hasPat = 'true', maxRounds = '3', asker = 'o' } = {}) {
+async function run(comments, { hasPat = 'true', maxRounds = '3', asker = 'o', inline = [] } = {}) {
   const statuses = [];
   const outputs = {};
   const pr = { state: 'open', draft: false, head: { sha: HEAD, repo: { full_name: 'o/r' } } };
   const github = {
-    paginate: async () => comments,
+    paginate: async (fn) => (fn === github.rest.pulls.listReviewComments ? inline : comments),
     rest: {
-      pulls: { get: async () => ({ data: pr }) },
+      pulls: { get: async () => ({ data: pr }), listReviewComments: () => {} },
       issues: { listComments: () => {} },
       repos: { createCommitStatus: async (s) => statuses.push(`${s.state}: ${s.description}`) },
     },
@@ -77,6 +77,20 @@ test('findings → asks Codex once, as round 1, with the GLM text', async () => 
   assert.match(r.outputs.body, /\[P1\] a\.js:1/);
   assert.match(r.outputs.body, new RegExp(`<!-- ai-review:coord sha=${HEAD} round=1 -->$`));
   assert.deepEqual(r.statuses, ['pending: round 1: Codex is ruling on the findings']);
+});
+
+test('unknown (null) Codex result with an inline Codex comment on the head → treated as findings', async () => {
+  const unknown = { ...review(HEAD, false), has_any_findings: null, has_unresolved_findings: null };
+  const inline = [{ user: { login: 'chatgpt-codex-connector[bot]' }, original_commit_id: HEAD }];
+  const r = await run([codexState({ code_review: unknown, security_review: review(HEAD, false) }), glmComment(HEAD, 'clean')], { inline });
+  assert.equal(r.outputs.ask, 'true');
+});
+
+test('unknown (null) Codex result with Codex comments only on older heads → clean', async () => {
+  const unknown = { ...review(HEAD, false), has_any_findings: null, has_unresolved_findings: null };
+  const inline = [{ user: { login: 'chatgpt-codex-connector[bot]' }, original_commit_id: OLD }];
+  const r = await run([codexState({ code_review: unknown, security_review: review(HEAD, false) }), glmComment(HEAD, 'clean')], { inline });
+  assert.deepEqual(r.statuses, ['success: Codex and GLM found nothing']);
 });
 
 test('already asked about this head → does nothing', async () => {

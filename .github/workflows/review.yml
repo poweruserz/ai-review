@@ -231,7 +231,11 @@ jobs:
             }
             const onHead = r => r?.commit_sha === head && r.status === 'completed';
             const codexDone = onHead(codex?.code_review) && (!codex.security_review || onHead(codex.security_review));
-            const codexFindings = codexDone && [codex.code_review, codex.security_review].some(r => r?.commit_sha === head && r.has_unresolved_findings);
+            // has_unresolved_findings can be null; then Codex's inline comments made on this head decide (fail closed).
+            const reviewComments = await github.paginate(github.rest.pulls.listReviewComments, { owner, repo, pull_number, per_page: 100 });
+            const codexInline = reviewComments.filter(c => c.user.login === 'chatgpt-codex-connector[bot]' && c.original_commit_id === head).length;
+            const codexFindings = codexDone && [codex.code_review, codex.security_review].some(r => r?.commit_sha === head
+              && (r.has_unresolved_findings === true || (r.has_unresolved_findings == null && codexInline > 0)));
 
             const glm = comments.find(c => c.user.login === 'github-actions[bot]' && c.body.startsWith('<!-- ai-review:glm '));
             const g = glm && /^<!-- ai-review:glm sha=([0-9a-f]+) verdict=(\w+) -->/.exec(glm.body);
