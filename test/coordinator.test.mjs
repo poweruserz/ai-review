@@ -25,7 +25,8 @@ const glmComment = (sha, verdict, text = 'VERDICT: FINDINGS\n1. [P1] a.js:1 — 
   user: { login: 'github-actions[bot]' },
   body: `<!-- ai-review:glm sha=${sha} verdict=${verdict} -->\n### GLM review\nCommit \`${sha.slice(0, 7)}\`\n\n${text}`,
 });
-const ask = (sha, round, login = 'o') => ({ user: { login }, body: `@codex ...\n<!-- aifix sha=${sha} round=${round} -->` });
+const ask = (sha, round, login = 'o', created_at = '2026-10-19T06:39:51Z') => ({ user: { login }, created_at, body: `@codex ...\n<!-- aifix sha=${sha} round=${round} -->` });
+const codexReply = (body, created_at = '2026-10-19T06:40:02Z') => ({ user: { login: 'chatgpt-codex-connector[bot]' }, created_at, body });
 
 async function run(comments, { hasPat = 'true', maxRounds = '3', asker = 'o', inline = [] } = {}) {
   const statuses = [];
@@ -99,6 +100,18 @@ test('already asked about this head → does nothing', async () => {
   const r = await run([codexState({ code_review: review(HEAD, true) }), glmComment(HEAD, 'findings'), ask(HEAD, 1)]);
   assert.deepEqual(r.statuses, []);
   assert.equal(r.outputs.ask, undefined);
+});
+
+test('Codex answers the fix request with an error → failure that says why', async () => {
+  const reply = codexReply('To use Codex here, [create an environment for this repo](https://chatgpt.com/codex/cloud/settings/environments).');
+  const r = await run([codexState({ code_review: review(HEAD, true) }), glmComment(HEAD, 'findings'), ask(HEAD, 1), reply]);
+  assert.deepEqual(r.statuses, ['failure: Codex could not run the fix task: To use Codex here, create an environment for this repo.']);
+});
+
+test('a Codex error from before the request does not end the round', async () => {
+  const early = codexReply('Codex Review: Something went wrong.', '2026-10-19T06:00:00Z');
+  const r = await run([codexState({ code_review: review(HEAD, true) }), glmComment(HEAD, 'findings'), early, ask(HEAD, 1)]);
+  assert.deepEqual(r.statuses, []);
 });
 
 test('findings after three rounds → failure', async () => {

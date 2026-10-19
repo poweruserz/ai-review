@@ -182,8 +182,7 @@ jobs:
       always() && (
         (github.event_name == 'pull_request' && needs.post.result != 'skipped' && needs.post.result != 'cancelled')
         || (github.event_name == 'issue_comment' && github.event.issue.pull_request
-            && github.event.comment.user.login == 'chatgpt-codex-connector[bot]'
-            && contains(github.event.comment.body, 'codex-review-state:v1'))
+            && github.event.comment.user.login == 'chatgpt-codex-connector[bot]')
       )
     runs-on: ${{ fromJSON(inputs.runner) }}
     timeout-minutes: 5
@@ -247,8 +246,14 @@ jobs:
             const askRe = /<!-- aifix sha=([0-9a-f]+) round=\d+ -->/;
             // Only CODEX_TRIGGER_PAT's account writes these; anyone can comment on a public repository.
             const asks = comments.filter(c => c.user.login === process.env.ASKER && askRe.test(c.body));
-            // Codex was already asked about this head; its push starts the next round.
-            if (asks.some(c => askRe.exec(c.body)[1] === head)) return;
+            // Codex was already asked about this head: its push starts the next round, but an error reply ends this one.
+            const askedNow = asks.find(c => askRe.exec(c.body)[1] === head);
+            if (askedNow) {
+              const failed = comments.find(c => c.user.login === 'chatgpt-codex-connector[bot]' && c.created_at > askedNow.created_at
+                && /create an environment|something went wrong|usage limit|try again later/i.test(c.body));
+              if (failed) await status('failure', `Codex could not run the fix task: ${failed.body.replace(/\[([^\]]*)\]\([^)]*\)/g, '$1').split('\n')[0]}`);
+              return;
+            }
 
             if (!codexDone || !glmVerdict) {
               await status('pending', `waiting for ${[!codexDone && 'Codex', !glmVerdict && 'GLM'].filter(Boolean).join(' and ')}`);
