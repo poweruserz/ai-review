@@ -13,11 +13,12 @@ on:
   workflow_call:
     inputs:
       runner:
-        description: >-
-          JSON runs-on value: '["self-hosted","dreamfyre"]' for private repositories,
-          '"ubuntu-latest"' for public ones (the dreamfyre runner serves private repositories only).
+        # Ignored, kept so older callers that still pass it stay valid. The runner now follows visibility:
+        # private repositories use the review-only dreamfyre runners (user gha-review, label dreamfyre-review,
+        # apart from the gha CI runners); public ones use GitHub-hosted runners, never dreamfyre.
+        description: Ignored; the runner is chosen from the repository's visibility.
         type: string
-        default: '"ubuntu-latest"'
+        default: ''
       codex-fixes:
         # Off because, as of 2026-10-19, Codex cannot push to the PR branch: with a Legacy Codex Cloud environment
         # the task fixes and commits, then reports no Git remote to push to (openai/codex#38351).
@@ -44,7 +45,7 @@ jobs:
       && github.event.pull_request.head.repo.full_name == github.repository
       && !github.event.pull_request.draft
       && github.actor != 'dependabot[bot]'
-    runs-on: ${{ fromJSON(inputs.runner) }}
+    runs-on: ${{ github.event.repository.private && fromJSON('["self-hosted","dreamfyre-review"]') || 'ubuntu-latest' }}
     timeout-minutes: 25
     concurrency:
       group: ai-review-glm-${{ github.repository }}-${{ github.event.pull_request.number }}
@@ -147,7 +148,7 @@ jobs:
     name: Post the GLM review
     needs: glm
     if: always() && needs.glm.result != 'skipped' && needs.glm.result != 'cancelled'
-    runs-on: ${{ fromJSON(inputs.runner) }}
+    runs-on: ${{ github.event.repository.private && fromJSON('["self-hosted","dreamfyre-review"]') || 'ubuntu-latest' }}
     timeout-minutes: 5
     permissions:
       issues: write
@@ -191,7 +192,7 @@ jobs:
         || (github.event_name == 'issue_comment' && github.event.issue.pull_request
             && github.event.comment.user.login == 'chatgpt-codex-connector[bot]')
       )
-    runs-on: ${{ fromJSON(inputs.runner) }}
+    runs-on: ${{ github.event.repository.private && fromJSON('["self-hosted","dreamfyre-review"]') || 'ubuntu-latest' }}
     timeout-minutes: 5
     concurrency:
       group: ai-review-coord-${{ github.repository }}-${{ github.event.pull_request.number || github.event.issue.number }}

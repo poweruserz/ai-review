@@ -26,8 +26,8 @@ ZAI_KEY_FILE=<file> scripts/enrol.sh <repo>
 The script does three things. Each step is skipped when it is already done, so it is safe to re-run.
 
 - It sets the secret `ZAI_API_KEY` (a GLM Coding Plan key), which goes from the file straight to `gh`. `CODEX_TRIGGER_PAT` (a fine-grained PAT with Issues and Pull requests read and write) is added only to repositories that turn on `codex-fixes`.
-- For a private repository, it registers a dreamfyre runner through `scripts/dreamfyre-runner.sh` and the host's `register.sh`. Public repositories use GitHub-hosted runners, which are free for them; the dreamfyre runner serves private repositories only.
-- It opens a pull request that adds [`caller.yml`](caller.yml) as `.github/workflows/ai-review.yml`, with the runner set for the repository's visibility.
+- For a private repository, it registers a review-only dreamfyre runner through the host's root-owned `/usr/local/lib/gha-review/register.sh`. That runner runs as user `gha-review`, separate from the `gha` CI runners, has no Docker, and uses the label `dreamfyre-review`. Public repositories use GitHub-hosted runners, which are free for them; dreamfyre serves private repositories only.
+- It opens a pull request that adds [`caller.yml`](caller.yml) as `.github/workflows/ai-review.yml`. The reusable workflow picks the runner from the repository's visibility.
 
 Codex code review must also be enabled for the repository in chatgpt.com/settings/code-review.
 

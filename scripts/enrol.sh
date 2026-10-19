@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Enrols one repository in the AI review pipeline: its ZAI_API_KEY secret, a dreamfyre runner for a private
-# repository, and a pull request that adds caller.yml as .github/workflows/ai-review.yml.
+# Enrols one repository in the AI review pipeline: its ZAI_API_KEY secret, a review-only dreamfyre runner for
+# a private repository (user gha-review, label dreamfyre-review), and a pull request that adds caller.yml as
+# .github/workflows/ai-review.yml.
 # Run from the owner's machine (needs gh and `wsl -e ssh dreamfyre`). Every step is skipped when done,
 # so re-running is safe.
 # Usage: ZAI_KEY_FILE=<file> scripts/enrol.sh <repo>
@@ -20,21 +21,15 @@ if [ "$fork" = true ] || [ "$archived" = true ]; then say "fork or archived, ski
 tr -d '\r\n' < "$ZAI_KEY_FILE" | gh secret set ZAI_API_KEY -R "$OWNER/$REPO"
 say "secret set"
 
+# Public repositories run on GitHub-hosted runners for free and never get a dreamfyre runner.
 if [ "$private" = true ]; then
-  runner='["self-hosted","dreamfyre"]'
-  if [ "$(gh api "repos/$OWNER/$REPO/actions/runners" --jq '[.runners[] | select(any(.labels[]; .name == "dreamfyre"))] | length')" = 0 ]; then
-    wsl -e ssh dreamfyre "sudo -u gha -H env XDG_RUNTIME_DIR=/run/user/1009 bash -s -- '$REPO' prepare" < "$here/dreamfyre-runner.sh"
-    # The registration token goes through the pipe only (register.sh reads it from stdin).
+  if [ "$(gh api "repos/$OWNER/$REPO/actions/runners" --jq '[.runners[] | select(any(.labels[]; .name == "dreamfyre-review"))] | length')" = 0 ]; then
+    # The registration token goes through the pipe only; the root-owned register.sh reads it from stdin.
     gh api -X POST "repos/$OWNER/$REPO/actions/runners/registration-token" --jq .token \
-      | wsl -e ssh dreamfyre "sudo -u gha -H bash /home/gha/runners/register.sh '$REPO'" | grep -E '√|Error|error' || true
-    wsl -e ssh dreamfyre "sudo -u gha -H env XDG_RUNTIME_DIR=/run/user/1009 bash -s -- '$REPO' start" < "$here/dreamfyre-runner.sh"
-    say "runner dreamfyre-$REPO started"
+      | wsl -e ssh dreamfyre "sudo -u gha-review -H env XDG_RUNTIME_DIR=/run/user/1010 /usr/local/lib/gha-review/register.sh '$REPO'"
   else
-    say "dreamfyre runner already registered"
+    say "review runner already registered"
   fi
-else
-  # The dreamfyre runner serves private repositories only; public ones run on GitHub-hosted runners for free.
-  runner='"ubuntu-latest"'
 fi
 
 if gh api "repos/$OWNER/$REPO/contents/.github/workflows/ai-review.yml?ref=$branch" >/dev/null 2>&1; then
@@ -46,7 +41,7 @@ if [ -n "$open_pr" ]; then say "PR already open: $open_pr"; exit 0; fi
 base_sha="$(gh api "repos/$OWNER/$REPO/git/ref/heads/$branch" --jq .object.sha)"
 gh api -X POST "repos/$OWNER/$REPO/git/refs" -f ref=refs/heads/ci/ai-review -f sha="$base_sha" >/dev/null 2>&1 \
   || gh api -X PATCH "repos/$OWNER/$REPO/git/refs/heads/ci/ai-review" -f sha="$base_sha" -F force=true >/dev/null
-content="$(sed "s|runner: '.*'|runner: '$runner'|" "$here/../caller.yml" | base64 -w0)"
+content="$(base64 -w0 < "$here/../caller.yml")"
 gh api -X PUT "repos/$OWNER/$REPO/contents/.github/workflows/ai-review.yml" -f branch=ci/ai-review -f content="$content" \
   -f message="$(printf 'Add AI review: Codex and GLM review every pull request\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_018sTpGTbWLyCYygSZ4GoHwv')" >/dev/null
 gh pr create -R "$OWNER/$REPO" --base "$branch" --head ci/ai-review \

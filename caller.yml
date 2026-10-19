@@ -1,8 +1,8 @@
 name: AI review
 
-# Codex and GLM review every pull request head, and a coordinator asks Codex to rule on their
-# findings; see https://github.com/poweruserz/ai-review. Fork pull requests never reach the
-# persistent runner (the reusable workflow skips them).
+# Codex and GLM review every pull request head, and a coordinator reports the result as commit status
+# `ai-review`; see https://github.com/poweruserz/ai-review. Private repositories run on the review-only
+# dreamfyre runners, public ones on GitHub-hosted runners, and fork pull requests are skipped.
 
 on:
   pull_request:
@@ -24,8 +24,6 @@ jobs:
     # Only this account can push to poweruserz/ai-review, and it can already write here directly, so a SHA pin
     # would cost one PR per repository per update without stopping a real attacker. Only two secrets go there.
     uses: poweruserz/ai-review/.github/workflows/review.yml@main
-    with:
-      runner: '["self-hosted","dreamfyre"]'
-    secrets: # only these two, never `inherit`
+    secrets: # only these two, never `inherit`; CODEX_TRIGGER_PAT is set only where codex-fixes is on
       ZAI_API_KEY: ${{ secrets.ZAI_API_KEY }}
       CODEX_TRIGGER_PAT: ${{ secrets.CODEX_TRIGGER_PAT }}
