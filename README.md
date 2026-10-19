@@ -34,6 +34,9 @@ jobs:
   ai-review:
     # Second gate next to the reusable workflow's own: other comments never start it.
     if: github.event_name == 'pull_request' || github.event.comment.user.login == 'chatgpt-codex-connector[bot]'
+    # Tracks @main on purpose (owner's decision, 2026-10-19): the logic is maintained once for every repository.
+    # Only this account can push to poweruserz/ai-review, and it can already write here directly, so a SHA pin
+    # would cost one PR per repository per update without stopping a real attacker. Only two secrets go there.
     uses: poweruserz/ai-review/.github/workflows/review.yml@main
     with:
       runner: '["self-hosted","dreamfyre"]' # private repositories; public ones use '"ubuntu-latest"'
