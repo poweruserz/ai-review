@@ -33,7 +33,7 @@ jobs:
       && !github.event.pull_request.draft
       && github.actor != 'dependabot[bot]'
     runs-on: ${{ fromJSON(inputs.runner) }}
-    timeout-minutes: 30
+    timeout-minutes: 25
     concurrency:
       group: ai-review-glm-${{ github.repository }}-${{ github.event.pull_request.number }}
       cancel-in-progress: true
@@ -80,10 +80,16 @@ jobs:
           anthropic_api_key: ${{ secrets.ZAI_API_KEY }}
           github_token: ${{ github.token }}
           allowed_bots: chatgpt-codex-connector # Codex's fix pushes start this job
+          # --tools removes every other built-in tool (subagents, cron, skills); --allowedTools only skips prompts.
+          # --restricted and --strict-mcp-config keep a pull request's .claude/settings.json hooks and .mcp.json
+          # servers from running on the shared runner (the action sets enableAllProjectMcpServers).
           claude_args: >-
+            --restricted
+            --tools Read,Grep,Glob
             --allowedTools Read,Grep,Glob
-            --disallowedTools Bash,Edit,Write,NotebookEdit,WebFetch,WebSearch
-            --max-turns 80
+            --disallowedTools "mcp__*"
+            --strict-mcp-config
+            --max-turns 40
           prompt: |
             Review pull request #${{ github.event.pull_request.number }} in ${{ github.repository }} at commit ${{ github.event.pull_request.head.sha }}.
             The repository is checked out at that commit, and the full diff against the base is in ./.ai-review.diff.
