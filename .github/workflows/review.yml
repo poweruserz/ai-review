@@ -46,7 +46,7 @@ jobs:
       && !github.event.pull_request.draft
       && github.actor != 'dependabot[bot]'
     runs-on: ${{ github.event.repository.private && fromJSON('["self-hosted","dreamfyre-review"]') || 'ubuntu-latest' }}
-    timeout-minutes: 45 # GLM at max effort takes ~20 s a turn, and --max-turns is 100
+    timeout-minutes: 55 # the GLM step's 40 plus room for checkout, setup and verdict extraction
     concurrency:
       group: ai-review-glm-${{ github.repository }}-${{ github.event.pull_request.number }}
       cancel-in-progress: true
@@ -82,6 +82,10 @@ jobs:
       - name: GLM review
         id: glm
         continue-on-error: true # a GLM outage must not block the pipeline; Codex and the Claude gate still apply
+        # Must end well before the job's 55, which also covers the steps before this one: a job timeout cancels the
+        # job, so no "unavailable" comment would be posted and the coordinator would wait for GLM forever. A step
+        # timeout is a plain failure that continue-on-error absorbs. GLM at max effort takes ~20 s a turn.
+        timeout-minutes: 40
         uses: anthropics/claude-code-action@5eb090f3c3afd701a0672cd32981197ca27688f6 # v1
         with:
           anthropic_api_key: ${{ secrets.ZAI_API_KEY }}
