@@ -42,11 +42,13 @@ jobs:
     concurrency:
       group: ai-review-glm-${{ github.repository }}-${{ github.event.pull_request.number }}
       cancel-in-progress: true
+    # The model reads untrusted code, so this job's token can only read; posting and statuses live in jobs without a model.
     permissions:
       contents: read
-      issues: write
-      pull-requests: write # GITHUB_TOKEN needs it to comment on a pull request
-      statuses: write
+      pull-requests: read
+    outputs:
+      verdict: ${{ steps.result.outputs.verdict }}
+      text: ${{ steps.result.outputs.text }}
     env:
       HEAD_SHA: ${{ github.event.pull_request.head.sha }}
       BASE_SHA: ${{ github.event.pull_request.base.sha }}
@@ -59,15 +61,6 @@ jobs:
       API_TIMEOUT_MS: '3000000'
       CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1'
     steps:
-      - name: Mark the head as under review
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
-        with:
-          script: |
-            await github.rest.repos.createCommitStatus({
-              ...context.repo, sha: process.env.HEAD_SHA, state: 'pending',
-              context: 'ai-review', description: 'Codex and GLM are reviewing',
-            });
-
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ env.HEAD_SHA }}
@@ -118,7 +111,8 @@ jobs:
             P0 breaks production, loses or exposes data, or is exploitable. P1 is a real bug users will hit.
             Anything smaller is not a finding.
 
-      - name: Post the GLM review
+      - name: Extract the verdict
+        id: result
         if: ${{ !cancelled() }}
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
@@ -126,7 +120,6 @@ jobs:
         with:
           script: |
             const fs = require('fs');
-            const head = process.env.HEAD_SHA;
             let text = '', verdict = 'unavailable';
             try {
               const result = JSON.parse(fs.readFileSync(process.env.EXECUTION_FILE, 'utf8')).filter(m => m.type === 'result').at(-1);
@@ -135,8 +128,32 @@ jobs:
             } catch (e) {
               core.warning(`No GLM result: ${e.message}`);
             }
-            // GLM read untrusted code: neutralise mentions and hidden markers before posting.
-            text = text.replace(/<!--/g, '&lt;!--').replace(/@(?=[\w-])/g, '@​');
+            // GLM read untrusted code: neutralise mentions and hidden markers before anything posts it.
+            const zwsp = String.fromCharCode(0x200b);
+            core.setOutput('verdict', verdict);
+            core.setOutput('text', text.replace(/<!--/g, '&lt;!--').replace(/@(?=[\w-])/g, '@' + zwsp));
+
+  post:
+    name: Post the GLM review
+    needs: glm
+    if: always() && needs.glm.result != 'skipped' && needs.glm.result != 'cancelled'
+    runs-on: ${{ fromJSON(inputs.runner) }}
+    timeout-minutes: 5
+    permissions:
+      issues: write
+      pull-requests: write # GITHUB_TOKEN needs it to comment on a pull request; no model runs in this job
+    env:
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      VERDICT: ${{ needs.glm.outputs.verdict || 'unavailable' }}
+      TEXT: ${{ needs.glm.outputs.text }}
+    steps:
+      - name: Post or update the GLM comment
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const head = process.env.HEAD_SHA;
+            const verdict = process.env.VERDICT;
+            const text = process.env.TEXT;
             const body = [
               `<!-- ai-review:glm sha=${head} verdict=${verdict} -->`,
               '### GLM review',
@@ -155,12 +172,12 @@ jobs:
 
   coordinate:
     name: Coordinate
-    needs: glm
-    # Woken when GLM finishes, and when Codex creates or edits its review-state summary comment
+    needs: [glm, post]
+    # Woken when GLM's comment is posted, and when Codex creates or edits its review-state summary comment
     # (issue_comment runs only from the default branch).
     if: >-
       always() && (
-        (github.event_name == 'pull_request' && needs.glm.result != 'skipped' && needs.glm.result != 'cancelled')
+        (github.event_name == 'pull_request' && needs.post.result != 'skipped' && needs.post.result != 'cancelled')
         || (github.event_name == 'issue_comment' && github.event.issue.pull_request
             && github.event.comment.user.login == 'chatgpt-codex-connector[bot]'
             && contains(github.event.comment.body, 'codex-review-state:v1'))
@@ -170,10 +187,10 @@ jobs:
     concurrency:
       group: ai-review-coord-${{ github.repository }}-${{ github.event.pull_request.number || github.event.issue.number }}
       cancel-in-progress: false
-    permissions:
+    permissions: # reads and sets the status; the Codex request is posted with CODEX_TRIGGER_PAT
       contents: read
-      issues: write
-      pull-requests: write # GITHUB_TOKEN needs it to comment on a pull request
+      issues: read
+      pull-requests: read
       statuses: write
     env:
       PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
