@@ -52,7 +52,8 @@ jobs:
     env:
       HEAD_SHA: ${{ github.event.pull_request.head.sha }}
       BASE_SHA: ${{ github.event.pull_request.base.sha }}
-      # GLM Coding Plan through Z.ai's Anthropic-compatible endpoint; names from docs.z.ai/devpack/latest-model
+      # GLM Coding Plan through Z.ai's Anthropic-compatible endpoint; names from docs.z.ai/devpack/latest-model.
+      # GLM-5.3 is the flagship (strongest coding and vulnerability finding); Flash is lighter and FlashX is not on the plan.
       ANTHROPIC_BASE_URL: https://api.z.ai/api/anthropic
       ANTHROPIC_DEFAULT_OPUS_MODEL: glm-5.3[1m]
       ANTHROPIC_DEFAULT_SONNET_MODEL: glm-5.3[1m]
@@ -81,7 +82,9 @@ jobs:
           # --tools removes every other built-in tool (subagents, cron, skills); --allowedTools only skips prompts.
           # --restricted and --strict-mcp-config keep a pull request's .claude/settings.json hooks and .mcp.json
           # servers from running on the shared runner (the action sets enableAllProjectMcpServers).
+          # Without --effort Claude Code sends "high"; Z.ai recommends max for coding (GLM-5.3's deepest reasoning).
           claude_args: >-
+            --effort max
             --restricted
             --tools Read,Grep,Glob
             --allowedTools Read,Grep,Glob
