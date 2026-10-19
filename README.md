@@ -3,7 +3,7 @@
 Reusable GitHub Actions workflow that puts every pull request in poweruserz's repositories through two AI reviewers.
 
 1. **Codex** (the ChatGPT Codex Connector app) runs its code review and security review on every push. It is configured in chatgpt.com/settings/code-review, not here.
-2. **GLM** reviews the same head through [claude-code-action](https://github.com/anthropics/claude-code-action) pointed at Z.ai's Anthropic-compatible endpoint, at max reasoning effort. It gets read-only tools.
+2. **GLM** reviews the same head through [claude-code-action](https://github.com/anthropics/claude-code-action) pointed at Z.ai's Anthropic-compatible endpoint, at max reasoning effort. It gets read-only tools. If it runs out of turns (`glm-max-turns`, default 100), the same session is resumed with tools off, so it gives its verdict from what it has read and names the files it did not get to.
 3. **The coordinator** is plain script logic, not a model. It waits until both have reported on the current head and sets the commit status `ai-review`:
 
 | Status | Meaning | What the Claude session that opened the PR does |
