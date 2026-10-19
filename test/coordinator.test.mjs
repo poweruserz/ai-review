@@ -1,18 +1,27 @@
-// Runs the coordinator's "Decide" script straight out of review.yml against fake GitHub data.
+// Runs scripts straight out of review.yml: the coordinator's "Decide" against fake GitHub data, and the GLM
+// session finder against fake execution files.
 // Usage: node --test
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { createRequire } from 'node:module';
 
 const workflow = readFileSync(new URL('../.github/workflows/review.yml', import.meta.url), 'utf8').split('\n');
-const start = workflow.findIndex((line, i) => /^\s*script: \|$/.test(line) && workflow.slice(i - 8, i).some(l => l.includes('id: decide')));
-const indent = workflow[start].search(/\S/) + 2;
-const body = [];
-for (const line of workflow.slice(start + 1)) {
-  if (line.trim() && line.search(/\S/) < indent) break;
-  body.push(line.slice(indent));
+function stepScript(id, ...params) {
+  const start = workflow.findIndex((line, i) => /^\s*script: \|$/.test(line) && workflow.slice(i - 8, i).some(l => l.includes(`id: ${id}`)));
+  assert.ok(start > 0, `step ${id} not found`);
+  const indent = workflow[start].search(/\S/) + 2;
+  const body = [];
+  for (const line of workflow.slice(start + 1)) {
+    if (line.trim() && line.search(/\S/) < indent) break;
+    body.push(line.slice(indent));
+  }
+  return new (Object.getPrototypeOf(async () => {}).constructor)(...params, body.join('\n'));
 }
-const decide = new (Object.getPrototypeOf(async () => {}).constructor)('github', 'context', 'core', body.join('\n'));
+const decide = stepScript('decide', 'github', 'context', 'core');
+const findSession = stepScript('session', 'require', 'core');
 
 const HEAD = 'a'.repeat(40);
 const OLD = 'b'.repeat(40);
@@ -162,4 +171,33 @@ test("rounds follow the token's account even when it is not the repository owner
 test('missing token → error instead of a silent stall', async () => {
   const r = await run([codexState({ code_review: review(HEAD, false) }), glmComment(HEAD, 'findings')], { hasPat: 'false' });
   assert.deepEqual(r.statuses, ['error: CODEX_TRIGGER_PAT secret is missing']);
+});
+
+async function session(messages) {
+  const file = join(mkdtempSync(join(tmpdir(), 'ai-review-')), 'out.json');
+  if (messages !== undefined) writeFileSync(file, typeof messages === 'string' ? messages : JSON.stringify(messages));
+  const outputs = {}, warnings = [];
+  process.env.EXECUTION_FILE = file;
+  await findSession(createRequire(import.meta.url), { setOutput: (k, v) => { outputs[k] = v; }, warning: w => warnings.push(w) });
+  return { id: outputs.id, warnings };
+}
+const ID = '321f3910-abc0-49cb-a020-a5f56662abe6';
+const init = (session_id = ID) => ({ type: 'system', subtype: 'init', session_id });
+
+test('GLM out of turns → its session is resumed for a verdict', async () => {
+  assert.equal((await session([init(), { type: 'result', subtype: 'error_max_turns', is_error: true }])).id, ID);
+});
+
+test('GLM failed for another reason → nothing to resume', async () => {
+  assert.equal((await session([init(), { type: 'result', subtype: 'error_during_execution', is_error: true }])).id, undefined);
+});
+
+test('a session id that is not a plain UUID never reaches claude_args', async () => {
+  assert.equal((await session([init(`${ID} --dangerously-skip-permissions`), { type: 'result', subtype: 'error_max_turns' }])).id, undefined);
+});
+
+test('no execution file → a warning, nothing to resume', async () => {
+  const r = await session(undefined);
+  assert.equal(r.id, undefined);
+  assert.equal(r.warnings.length, 1);
 });
