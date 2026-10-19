@@ -21,6 +21,11 @@ on:
         description: Codex fix rounds before the coordinator reports failure.
         type: number
         default: 3
+    secrets: # passed one by one, never `secrets: inherit`, so a change here can reach only these two
+      ZAI_API_KEY:
+        required: false
+      CODEX_TRIGGER_PAT:
+        required: false
 
 permissions: {}
 
@@ -40,7 +45,7 @@ jobs:
     permissions:
       contents: read
       issues: write
-      pull-requests: read
+      pull-requests: write # GITHUB_TOKEN needs it to comment on a pull request
       statuses: write
     env:
       HEAD_SHA: ${{ github.event.pull_request.head.sha }}
@@ -168,7 +173,7 @@ jobs:
     permissions:
       contents: read
       issues: write
-      pull-requests: read
+      pull-requests: write # GITHUB_TOKEN needs it to comment on a pull request
       statuses: write
     env:
       PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}

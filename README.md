@@ -27,16 +27,22 @@ on:
 permissions:
   contents: read
   issues: write
-  pull-requests: read
+  pull-requests: write
   statuses: write
 
 jobs:
   ai-review:
+    # Second gate next to the reusable workflow's own: other comments never start it.
+    if: github.event_name == 'pull_request' || github.event.comment.user.login == 'chatgpt-codex-connector[bot]'
     uses: poweruserz/ai-review/.github/workflows/review.yml@main
     with:
       runner: '["self-hosted","dreamfyre"]' # private repositories; public ones use '"ubuntu-latest"'
-    secrets: inherit
+    secrets: # only these two, never `inherit`
+      ZAI_API_KEY: ${{ secrets.ZAI_API_KEY }}
+      CODEX_TRIGGER_PAT: ${{ secrets.CODEX_TRIGGER_PAT }}
 ```
+
+The caller tracks `@main`, so a change here reaches every repository at once. That is the point of keeping the logic in one place. The cost is that a push to this repository's `main` runs with the two secrets above in every enrolled repository, so treat `main` here like production code.
 
 Then set up the secrets and the runner:
 
