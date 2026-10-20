@@ -358,10 +358,11 @@ jobs:
               const head = /^VERDICT: (CLEAN|FINDINGS)$/.exec(lines[0] ?? '');
               const marks = lines.filter(l => /^Not reviewed: /.test(l));
               const rest = lines.slice(1).filter(l => !/^Not reviewed: /.test(l));
-              // At most one "Not reviewed" line, and only as the last line: a second one could hide unread files.
+              // At most one "Not reviewed" line, only as the last line (a second one could hide unread files), and
+              // exactly one after a wrap-up, which was asked to name what it never read.
               const shaped = head && rest.every(l => /^\d+\. \[P[01]\] .+/.test(l))
                 && (head[1] === 'CLEAN' ? rest.length === 0 : rest.length > 0)
-                && marks.length <= 1 && (marks.length === 0 || lines.at(-1) === marks[0]);
+                && (process.env.FIRST_FILE ? marks.length === 1 : marks.length <= 1) && (marks.length === 0 || lines.at(-1) === marks[0]);
               if (wrong.length) reason = `answers from ${wrong.join(', ')}, not ${process.env.MODEL}`;
               else if (unlabelled) reason = 'the execution record does not name the model on every answer';
               else if (search?.status !== 'connected') reason = `the search tools did not start (${search?.status ?? 'absent'}): see the workflow run`;

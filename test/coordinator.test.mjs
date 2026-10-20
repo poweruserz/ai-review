@@ -293,8 +293,13 @@ test('after a wrap-up, a first run on another model still voids the verdict', as
   const r = await verdict([gateInit(), answer(), done('VERDICT: CLEAN')], { first });
   assert.equal(r.verdict, 'unavailable');
   assert.match(r.reason, /claude-mythos-5-1/);
-  const ok = await verdict([gateInit(), answer(), done('VERDICT: CLEAN')], { first: [gateInit(), answer(), { type: 'result', subtype: 'error_max_turns', is_error: true }] });
+  const clean = [gateInit(), answer(), { type: 'result', subtype: 'error_max_turns', is_error: true }];
+  const ok = await verdict([gateInit(), answer(), done('VERDICT: CLEAN\nNot reviewed: none')], { first: clean });
   assert.equal(ok.verdict, 'clean');
+  // A wrap-up that does not say what it never read gives no verdict.
+  const silent = await verdict([gateInit(), answer(), done('VERDICT: CLEAN')], { first: clean });
+  assert.equal(silent.verdict, 'unavailable');
+  assert.match(silent.reason, /verdict format/);
 });
 
 test('a clean verdict from the gate model is extracted', async () => {
