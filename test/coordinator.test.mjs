@@ -422,6 +422,21 @@ test('a FINDINGS answer with any other line gives no verdict', async () => {
   }
 });
 
+test('a resumed answer cannot drop the findings of the first one', async () => {
+  for (const named of ['VERDICT: FINDINGS\n1. [P1] a.js:1 — x — y → z — w\nAlso, note that…', 'I found this:\n- [P0] a.js:1 — x\n\nVERDICT: FINDINGS']) {
+    const first = [gateInit(), answer(), done(named)];
+    const clean = await verdict([gateInit(), answer(), done('VERDICT: CLEAN\nNot reviewed: none')], { first });
+    assert.equal(clean.verdict, 'unavailable', named);
+    assert.match(clean.reason, /dropped the findings/);
+    assert.match(clean.info.join('\n'), /first answer:\n(VERDICT: FINDINGS|I found this:)/);
+    const kept = await verdict([gateInit(), answer(), done('VERDICT: FINDINGS\n1. [P1] a.js:1 — x — y → z — w\nNot reviewed: none')], { first });
+    assert.equal(kept.verdict, 'findings', named);
+  }
+  // Prose that only mentions the severities names no finding.
+  const none = [gateInit(), answer(), done('I found no P0 or P1 problems. The shape is 1. [P0|P1] path:line.\n\nVERDICT: CLEAN')];
+  assert.equal((await verdict([gateInit(), answer(), done('VERDICT: CLEAN\nNot reviewed: none')], { first: none })).verdict, 'clean');
+});
+
 test('an answer that gave no verdict is printed in the run log, scrubbed', async () => {
   const r = await verdict([gateInit(), answer(), done('I checked the alerts with @codex.\n\nVERDICT: CLEAN')]);
   assert.equal(r.verdict, 'unavailable');

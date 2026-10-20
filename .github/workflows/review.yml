@@ -341,7 +341,7 @@ jobs:
         with:
           script: |
             const fs = require('fs');
-            let text = '', verdict = 'unavailable', reason = '', answer = '';
+            let text = '', verdict = 'unavailable', reason = '', answer = '', first = '';
             if (process.env.HAS_TOKEN !== 'true') reason = 'the CLAUDE_CODE_OAUTH_TOKEN secret is missing: update the caller';
             else if (process.env.SEARCH_OUTCOME === 'failure') reason = 'the search tools could not be set up: see the workflow run';
             else try {
@@ -349,9 +349,11 @@ jobs:
               const messages = read(process.env.EXECUTION_FILE);
               // After a wrap-up, the first run's answers count too: a verdict from the right model must not launder
               // an earlier run on another one.
-              const all = process.env.FIRST_FILE ? [...read(process.env.FIRST_FILE), ...messages] : messages;
+              const earlier = process.env.FIRST_FILE ? read(process.env.FIRST_FILE) : [];
+              const all = [...earlier, ...messages];
               const result = messages.filter(m => m.type === 'result').at(-1);
               answer = result?.result ?? '';
+              first = earlier.filter(m => m.type === 'result').at(-1)?.result ?? '';
               // The review is the security gate, so a verdict counts only when every answer came from the gate's
               // model: a fallback model, or a synthetic error message, gives no verdict.
               const inits = all.filter(m => m.type === 'system' && m.subtype === 'init').map(m => m.model);
@@ -381,6 +383,9 @@ jobs:
               else if (search?.status !== 'connected') reason = `the search tools did not start (${search?.status ?? 'absent'}): see the workflow run`;
               else if (!result || result.is_error) reason = `no verdict: ${result?.subtype ?? 'no result'}`;
               else if (!shaped) reason = 'the answer did not follow the verdict format: see the workflow run';
+              // A resumed answer may add the shape, never drop findings: CLEAN after a first answer that named any
+              // is no verdict.
+              else if (head[1] === 'CLEAN' && /(^|\n)VERDICT: FINDINGS|\[P[01]\]/.test(first)) reason = 'the resumed answer dropped the findings of the first one: see the workflow run';
               else {
                 verdict = head[1].toLowerCase();
                 text = lines.join('\n');
@@ -411,6 +416,7 @@ jobs:
             };
             // The action hides the model's output, and the comment sends the reader here, so an answer that gave
             // no verdict is printed, scrubbed like the posted text.
+            if (reason && first) core.info(`Claude's first answer:\n${scrub(first)}`);
             if (reason && answer) core.info(`Claude's answer:\n${scrub(answer)}`);
             core.setOutput('verdict', verdict);
             core.setOutput('reason', scrub(reason));
