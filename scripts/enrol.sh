@@ -36,7 +36,9 @@ fi
 if gh api "repos/$OWNER/$REPO/contents/.github/workflows/ai-review.yml?ref=$branch" >/dev/null 2>&1; then
   say "caller already on $branch"
   # Only once the caller has merged: before that, the enrolment pull request never gets a final status.
-  if [ "$(gh api "repos/$OWNER/$REPO/rulesets" --jq '[.[] | select(.name == "ai-review required")] | length')" = 0 ]; then
+  # A plain assignment, so that set -e stops the script when the lookup fails instead of skipping the ruleset.
+  rulesets="$(gh api "repos/$OWNER/$REPO/rulesets" --jq '[.[] | select(.name == "ai-review required")] | length')"
+  if [ "$rulesets" = 0 ]; then
     gh api -X POST "repos/$OWNER/$REPO/rulesets" --input "$here/ruleset.json" >/dev/null
     say "ruleset added: merging into $branch needs ai-review success"
   else
