@@ -25,15 +25,18 @@ const findSession = stepScript('session', 'require', 'core');
 
 const HEAD = 'a'.repeat(40);
 const OLD = 'b'.repeat(40);
-const codexState = (state) => ({
+const codexState = (state, updated_at = '2026-10-20T10:00:00Z') => ({
   user: { login: 'chatgpt-codex-connector[bot]' },
+  updated_at,
   body: `<!-- codex-pull-request-review-summary -->\n<!-- codex-review-state:v1 ${JSON.stringify(state)} -->\n## Codex Review Summary`,
 });
 const review = (sha, findings, status = 'completed') => ({ commit_sha: sha, status, has_any_findings: findings, has_unresolved_findings: findings });
-const glmComment = (sha, verdict, text = 'VERDICT: FINDINGS\n1. [P1] a.js:1 — bug') => ({
+const glmComment = (sha, verdict, text = 'VERDICT: FINDINGS\n1. [P1] a.js:1 — bug', updated_at = '2026-10-20T10:00:00Z') => ({
   user: { login: 'github-actions[bot]' },
+  updated_at,
   body: `<!-- ai-review:glm sha=${sha} verdict=${verdict} -->\n### GLM review\nCommit \`${sha.slice(0, 7)}\`\n\n${text}`,
 });
+const ruling = (sha = HEAD, login = 'o', created_at = '2026-10-20T11:00:00Z') => ({ user: { login }, created_at, body: `<!-- ai-review:ruled sha=${sha} -->\nRejected: …` });
 const ask = (sha, round, login = 'o', created_at = '2026-10-19T06:39:51Z') => ({ user: { login }, created_at, body: `@codex ...\n<!-- aifix sha=${sha} round=${round} -->` });
 const codexReply = (body, created_at = '2026-10-19T06:40:02Z') => ({ user: { login: 'chatgpt-codex-connector[bot]' }, created_at, body });
 
@@ -158,6 +161,48 @@ test('Claude fixes by default: findings → failure naming the sources, and Code
 test('Claude fixes by default: GLM-only findings name GLM alone', async () => {
   const r = await run([codexState({ code_review: review(HEAD, false) }), glmComment(HEAD, 'findings')], { codexFixes: 'false' });
   assert.deepEqual(r.statuses, ['failure: findings to rule on from GLM']);
+});
+
+// Every Codex thread is resolved in these, so only the ruling decides.
+const ruled = (extra, opts = {}) => run([codexState({ code_review: review(HEAD, true), security_review: review(HEAD, false) }), glmComment(HEAD, 'findings'), ...extra],
+  { threads: [thread(true)], codexFixes: 'false', ...opts });
+
+test('the owner ruled on every finding after both results → success', async () => {
+  const r = await ruled([ruling()]);
+  assert.deepEqual(r.statuses, ['success: the owner ruled on the findings from GLM']);
+});
+
+test('a ruling also covers a stale security flag', async () => {
+  const r = await run([codexState({ code_review: review(HEAD, false), security_review: review(HEAD, true) }), glmComment(HEAD, 'clean'), ruling()],
+    { threads: [], codexFixes: 'false' });
+  assert.deepEqual(r.statuses, ['success: the owner ruled on the findings from Codex']);
+});
+
+test('a ruling older than a result it would cover does not count', async () => {
+  const r = await run([codexState({ code_review: review(HEAD, true), security_review: review(HEAD, false) }, '2026-10-20T12:00:00Z'), glmComment(HEAD, 'findings'), ruling()],
+    { threads: [thread(true)], codexFixes: 'false' });
+  assert.deepEqual(r.statuses, ['failure: findings to rule on from GLM']);
+});
+
+test('a ruling for another head does not count', async () => {
+  const r = await ruled([ruling(OLD)]);
+  assert.deepEqual(r.statuses, ['failure: findings to rule on from GLM']);
+});
+
+test('a ruling from anyone but the owner does not count', async () => {
+  const r = await ruled([ruling(HEAD, 'stranger')]);
+  assert.deepEqual(r.statuses, ['failure: findings to rule on from GLM']);
+});
+
+test('an open Codex thread still blocks a ruling', async () => {
+  const r = await ruled([ruling()], { threads: [thread(true), thread(false)] });
+  assert.deepEqual(r.statuses, ['failure: findings to rule on from Codex and GLM']);
+});
+
+test('a ruling does not cover a security review still running', async () => {
+  const r = await run([codexState({ code_review: review(HEAD, true), security_review: review(HEAD, false, 'running') }), glmComment(HEAD, 'findings'), ruling()],
+    { threads: [thread(true)], codexFixes: 'false' });
+  assert.deepEqual(r.statuses, ['pending: waiting for Codex']);
 });
 
 test('Codex answers the fix request with an error → error that says why', async () => {

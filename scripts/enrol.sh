@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Enrols one repository in the AI review pipeline: its ZAI_API_KEY secret, a review-only dreamfyre runner for
 # a private repository (user gha-review, label dreamfyre-review), and a pull request that adds caller.yml as
-# .github/workflows/ai-review.yml. Run it again after that pull request merges to add the ruleset that makes
-# merging need ai-review success.
+# .github/workflows/ai-review.yml. Run it again once Codex has reviewed that pull request: it adds the ruleset that
+# makes merging need ai-review success, then re-runs the coordinator, which nothing else wakes before the caller merges.
 # Run from the owner's machine (needs gh and `wsl -e ssh dreamfyre`). Every step is skipped when done,
 # so re-running is safe.
 # Usage: ZAI_KEY_FILE=<file> scripts/enrol.sh <repo>
@@ -33,9 +33,7 @@ if [ "$private" = true ]; then
   fi
 fi
 
-if gh api "repos/$OWNER/$REPO/contents/.github/workflows/ai-review.yml?ref=$branch" >/dev/null 2>&1; then
-  say "caller already on $branch"
-  # Only once the caller has merged: before that, the enrolment pull request never gets a final status.
+ensure_ruleset() {
   # A plain assignment, so that set -e stops the script when the lookup fails instead of skipping the ruleset.
   rulesets="$(gh api "repos/$OWNER/$REPO/rulesets" --jq '[.[] | select(.name == "ai-review required")] | length')"
   if [ "$rulesets" = 0 ]; then
@@ -44,10 +42,22 @@ if gh api "repos/$OWNER/$REPO/contents/.github/workflows/ai-review.yml?ref=$bran
   else
     say "ruleset already there"
   fi
+}
+
+if gh api "repos/$OWNER/$REPO/contents/.github/workflows/ai-review.yml?ref=$branch" >/dev/null 2>&1; then
+  say "caller already on $branch"
+  ensure_ruleset
   exit 0
 fi
-open_pr="$(gh pr list -R "$OWNER/$REPO" --head ci/ai-review --state open --json url --jq '.[0].url // ""')"
-if [ -n "$open_pr" ]; then say "PR already open: $open_pr"; exit 0; fi
+open_pr="$(gh pr list -R "$OWNER/$REPO" --head ci/ai-review --state open --json number --jq '.[0].number // ""')"
+if [ -n "$open_pr" ]; then
+  # Not before the pull request: the ruleset names GitHub Actions as the status source, which GitHub may refuse
+  # until Actions has run here, and the pull request's own run can be the first. It goes in before the merge, so
+  # that pull request too merges only on success, which the coordinator re-run gives it: until the caller merges,
+  # Codex finishing wakes nothing here.
+  ensure_ruleset
+  exec bash "$here/recheck.sh" "$REPO" "$open_pr"
+fi
 
 base_sha="$(gh api "repos/$OWNER/$REPO/git/ref/heads/$branch" --jq .object.sha)"
 gh api -X POST "repos/$OWNER/$REPO/git/refs" -f ref=refs/heads/ci/ai-review -f sha="$base_sha" >/dev/null 2>&1 \
@@ -57,4 +67,4 @@ gh api -X PUT "repos/$OWNER/$REPO/contents/.github/workflows/ai-review.yml" -f b
   -f message="$(printf 'Add AI review: Codex and GLM review every pull request\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_018sTpGTbWLyCYygSZ4GoHwv')" >/dev/null
 gh pr create -R "$OWNER/$REPO" --base "$branch" --head ci/ai-review \
   --title "Add AI review: Codex and GLM review every pull request" \
-  --body "$(printf 'Adds `.github/workflows/ai-review.yml`, the caller for [poweruserz/ai-review](https://github.com/poweruserz/ai-review): GLM reviews every pull request head next to Codex, and a coordinator sets commit status `ai-review` (success, failure = findings for the Claude session, error). Same file as poweruserz/meteosfer#36, which passed the Mythos security gate.\n\nThe coordinator'"'"'s `issue_comment` trigger runs from the default branch, so the full loop starts after this merges.\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nhttps://claude.ai/code/session_018sTpGTbWLyCYygSZ4GoHwv')"
+  --body "$(printf 'Adds `.github/workflows/ai-review.yml`, the caller for [poweruserz/ai-review](https://github.com/poweruserz/ai-review): GLM reviews every pull request head next to Codex, and a coordinator sets commit status `ai-review` (success, failure = findings for the Claude session, error). Same file as poweruserz/meteosfer#36, which passed the Mythos security gate.\n\nThe coordinator'"'"'s `issue_comment` trigger runs from the default branch, so until this merges, `scripts/enrol.sh` run again re-runs the coordinator here.\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nhttps://claude.ai/code/session_018sTpGTbWLyCYygSZ4GoHwv')"
