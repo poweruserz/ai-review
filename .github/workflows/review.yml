@@ -44,9 +44,6 @@ on:
       CLAUDE_CODE_OAUTH_TOKEN:
         description: From `claude setup-token` on the owner's machine; the review runs on that subscription.
         required: false
-      ZAI_API_KEY:
-        description: Unused since the GLM reviewer was replaced; accepted so callers can be updated one by one.
-        required: false
       CODEX_TRIGGER_PAT:
         required: false
 
@@ -359,15 +356,29 @@ jobs:
               // injected reply that quotes the format somewhere inside, or any other line gives no verdict.
               const lines = (result?.result ?? '').trim().split('\n').map(l => l.trimEnd()).filter(Boolean);
               const head = /^VERDICT: (CLEAN|FINDINGS)$/.exec(lines[0] ?? '');
+              const marks = lines.filter(l => /^Not reviewed: /.test(l));
               const rest = lines.slice(1).filter(l => !/^Not reviewed: /.test(l));
+              // At most one "Not reviewed" line, only as the last line (a second one could hide unread files), and
+              // exactly one after a wrap-up, which was asked to name what it never read.
               const shaped = head && rest.every(l => /^\d+\. \[P[01]\] .+/.test(l))
-                && (head[1] === 'CLEAN' ? rest.length === 0 : rest.length > 0);
+                && (head[1] === 'CLEAN' ? rest.length === 0 : rest.length > 0)
+                && (process.env.FIRST_FILE ? marks.length === 1 : marks.length <= 1) && (marks.length === 0 || lines.at(-1) === marks[0]);
               if (wrong.length) reason = `answers from ${wrong.join(', ')}, not ${process.env.MODEL}`;
               else if (unlabelled) reason = 'the execution record does not name the model on every answer';
               else if (search?.status !== 'connected') reason = `the search tools did not start (${search?.status ?? 'absent'}): see the workflow run`;
               else if (!result || result.is_error) reason = `no verdict: ${result?.subtype ?? 'no result'}`;
               else if (!shaped) reason = 'the answer did not follow the verdict format: see the workflow run';
-              else { verdict = head[1].toLowerCase(); text = lines.join('\n'); }
+              else {
+                verdict = head[1].toLowerCase();
+                text = lines.join('\n');
+                // A wrap-up names the files it never got to; a verdict that skipped files is not clean, so they
+                // become a finding for the session to review itself.
+                const unread = lines.find(l => /^Not reviewed: /.test(l))?.slice('Not reviewed: '.length).trim();
+                if (unread && unread.toLowerCase() !== 'none') {
+                  verdict = 'findings';
+                  text = ['VERDICT: FINDINGS', ...rest, `${rest.length + 1}. [P1] ${unread} — not reviewed: the review ran out of turns before reading these — review them yourself before merging`].join('\n');
+                }
+              }
             } catch (e) {
               reason = `no result: ${e.message}`;
             }

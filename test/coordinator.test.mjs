@@ -293,8 +293,13 @@ test('after a wrap-up, a first run on another model still voids the verdict', as
   const r = await verdict([gateInit(), answer(), done('VERDICT: CLEAN')], { first });
   assert.equal(r.verdict, 'unavailable');
   assert.match(r.reason, /claude-mythos-5-1/);
-  const ok = await verdict([gateInit(), answer(), done('VERDICT: CLEAN')], { first: [gateInit(), answer(), { type: 'result', subtype: 'error_max_turns', is_error: true }] });
+  const clean = [gateInit(), answer(), { type: 'result', subtype: 'error_max_turns', is_error: true }];
+  const ok = await verdict([gateInit(), answer(), done('VERDICT: CLEAN\nNot reviewed: none')], { first: clean });
   assert.equal(ok.verdict, 'clean');
+  // A wrap-up that does not say what it never read gives no verdict.
+  const silent = await verdict([gateInit(), answer(), done('VERDICT: CLEAN')], { first: clean });
+  assert.equal(silent.verdict, 'unavailable');
+  assert.match(silent.reason, /verdict format/);
 });
 
 test('a clean verdict from the gate model is extracted', async () => {
@@ -377,6 +382,22 @@ test('a failed search-tool setup is named as the reason', async () => {
   delete process.env.SEARCH_OUTCOME;
   assert.equal(r.verdict, 'unavailable');
   assert.match(r.reason, /search tools could not be set up/);
+});
+
+test('files a wrap-up never read become a finding', async () => {
+  const clean = await verdict([gateInit(), answer(), done('VERDICT: CLEAN\nNot reviewed: src/a.js, src/b.js')]);
+  assert.equal(clean.verdict, 'findings');
+  assert.equal(clean.text, 'VERDICT: FINDINGS\n1. [P1] src/a.js, src/b.js — not reviewed: the review ran out of turns before reading these — review them yourself before merging');
+  const more = await verdict([gateInit(), answer(), done('VERDICT: FINDINGS\n1. [P0] x.js:1 — a — b → c — d\nNot reviewed: y.js')]);
+  assert.equal(more.verdict, 'findings');
+  assert.match(more.text, /^VERDICT: FINDINGS\n1\. \[P0\] x\.js:1 .*\n2\. \[P1\] y\.js — not reviewed/);
+  const none = await verdict([gateInit(), answer(), done('VERDICT: CLEAN\nNot reviewed: none')]);
+  assert.equal(none.verdict, 'clean');
+  for (const bad of ['VERDICT: CLEAN\nNot reviewed: none\nNot reviewed: src/unread.js', 'VERDICT: FINDINGS\nNot reviewed: none\n1. [P1] a.js:1 — x']) {
+    const r = await verdict([gateInit(), answer(), done(bad)]);
+    assert.equal(r.verdict, 'unavailable', bad);
+    assert.match(r.reason, /verdict format/);
+  }
 });
 
 test('a FINDINGS answer with any other line gives no verdict', async () => {
