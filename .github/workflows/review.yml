@@ -36,6 +36,10 @@ on:
         description: Turns Claude gets to read before it must give its verdict.
         type: number
         default: 100
+      glm-max-turns:
+        description: Former name of max-turns; a caller still passing it keeps working, and a non-zero value wins.
+        type: number
+        default: 0
     secrets: # passed one by one, never `secrets: inherit`, so a change here can reach only these
       CLAUDE_CODE_OAUTH_TOKEN:
         description: From `claude setup-token` on the owner's machine; the review runs on that subscription.
@@ -87,6 +91,23 @@ jobs:
       - name: Write the pull request diff
         run: git diff --merge-base "$BASE_SHA" "$HEAD_SHA" > .ai-review.diff
 
+      # Grep and glob for the reviewer, as a read-only MCP server over git with no shell (native Claude Code builds
+      # dropped the Grep and Glob tools). Fetched from this workflow's own commit, so the two always match.
+      - name: Set up the search tools
+        id: search
+        if: env.HAS_TOKEN == 'true'
+        env:
+          WORKFLOW_SHA: ${{ github.job_workflow_sha }}
+        run: |
+          set -euo pipefail
+          curl -fsSL "https://raw.githubusercontent.com/poweruserz/ai-review/$WORKFLOW_SHA/scripts/search-mcp.mjs" -o "$RUNNER_TEMP/search-mcp.mjs"
+          # The runner's own node (what actions/github-script runs on) when none is on PATH, as on the dreamfyre review runners.
+          node="$(command -v node || ls "$RUNNER_TEMP"/../../externals/node2*/bin/node 2>/dev/null | tail -n 1)"
+          "$node" --version >/dev/null
+          "$node" -e 'require("fs").writeFileSync(process.argv[1], JSON.stringify({ mcpServers: { search: { command: process.argv[2], args: [process.argv[3]] } } }))' \
+            "$RUNNER_TEMP/search-mcp.json" "$node" "$RUNNER_TEMP/search-mcp.mjs"
+          echo "config=$RUNNER_TEMP/search-mcp.json" >> "$GITHUB_OUTPUT"
+
       - name: Claude review
         id: claude
         if: env.HAS_TOKEN == 'true'
@@ -102,8 +123,10 @@ jobs:
           github_token: ${{ github.token }}
           allowed_bots: chatgpt-codex-connector # Codex's fix pushes start this job
           # --tools removes every other built-in tool (subagents, cron, skills); --allowedTools only skips prompts.
-          # Read is all there is: native Claude Code builds dropped Grep and Glob in 2.1.117 for search through Bash,
-          # which stays off because this job holds the owner's token.
+          # Read plus the grep and glob above are all there is. Bash stays off: this job holds the owner's token,
+          # and any command, even an allowlisted one, has flags that run programs.
+          # The Read denies keep the model, which reads untrusted code, out of the process environment (/proc),
+          # the runner's credentials and the host; the workspace lives under the home directory, so that stays open.
           # --restricted and --strict-mcp-config keep a pull request's .claude/settings.json hooks and .mcp.json
           # servers from running on the shared runner (the action sets enableAllProjectMcpServers).
           # Max effort, as the local gate had: on 8 real bugs, low effort ran 10x faster but found none of what max found.
@@ -112,21 +135,22 @@ jobs:
             --effort max
             --restricted
             --tools Read
-            --allowedTools Read
-            --disallowedTools "mcp__*"
+            --allowedTools Read,mcp__search__grep,mcp__search__glob
+            --disallowedTools "Read(//proc/**),Read(//sys/**),Read(//dev/**),Read(//etc/**),Read(//run/**),Read(//var/**),Read(//tmp/**),Read(~/.claude/**),Read(**/.credentials*),Read(**/.runner)"
+            --mcp-config ${{ steps.search.outputs.config }}
             --strict-mcp-config
-            --max-turns ${{ inputs.max-turns }}
+            --max-turns ${{ inputs.glm-max-turns || inputs.max-turns }}
           prompt: |
             Review pull request #${{ github.event.pull_request.number }} in ${{ github.repository }} at commit ${{ github.event.pull_request.head.sha }}.
             The repository is checked out at that commit, and the full diff against the base is in ./.ai-review.diff.
 
             Read ./.ai-review.diff whole, in one Read call with allow_large: true (it can be larger than Read's
             default limit, and reading it in parts wastes turns). Then read as much surrounding code as you need
-            to judge each change, including the call sites of anything whose behavior changed. Your only tool is
-            Read: there is no search. When you need several files, request them all in one message as parallel
-            tool calls, because every message costs a full round trip. Every tool call also uses one of a limited
-            number of turns, so on a large diff open only the files where a change could cause one of the problems
-            below.
+            to judge each change, including the call sites of anything whose behavior changed. Your tools are
+            Read, grep (file contents, extended regex) and glob (file paths); there is no shell. When you need
+            several files or searches, request them all in one message as parallel tool calls, because every
+            message costs a full round trip. Every tool call also uses one of a limited number of turns, so on a
+            large diff open only the files where a change could cause one of the problems below.
 
             You are the last review before this change is merged and deployed, so look for two kinds of problems:
             1. Correctness: wrong results, data loss, swallowed errors, races, and behavior changes that look
@@ -152,17 +176,20 @@ jobs:
             Anything smaller is not a finding.
 
       # When Claude runs out of turns the action throws before it sets `session_id`, but the execution file is
-      # written, and its init message names the session.
+      # written, and its init message names the session. The wrap-up below overwrites that file, so a copy keeps
+      # the first run's answers for the model check.
       - name: Find the session that ran out of turns
         id: session
         if: ${{ !cancelled() && steps.claude.outcome == 'failure' }}
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           EXECUTION_FILE: ${{ steps.claude.outputs.execution_file }}
+          FIRST_FILE: ${{ runner.temp }}/claude-execution-first.json
         with:
           script: |
             const fs = require('fs');
             try {
+              fs.copyFileSync(process.env.EXECUTION_FILE, process.env.FIRST_FILE);
               const messages = JSON.parse(fs.readFileSync(process.env.EXECUTION_FILE, 'utf8'));
               const result = messages.filter(m => m.type === 'result').at(-1);
               const id = messages.find(m => m.type === 'system' && m.subtype === 'init')?.session_id ?? '';
@@ -204,20 +231,26 @@ jobs:
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           EXECUTION_FILE: ${{ steps.wrapup.outputs.execution_file || steps.claude.outputs.execution_file }}
+          FIRST_FILE: ${{ steps.wrapup.outputs.execution_file && format('{0}/claude-execution-first.json', runner.temp) || '' }}
+          TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }} # only compared against the output, which goes to a public comment
         with:
           script: |
             const fs = require('fs');
             let text = '', verdict = 'unavailable', reason = '';
             if (process.env.HAS_TOKEN !== 'true') reason = 'the CLAUDE_CODE_OAUTH_TOKEN secret is missing: update the caller';
             else try {
-              const messages = JSON.parse(fs.readFileSync(process.env.EXECUTION_FILE, 'utf8'));
+              const read = (f) => JSON.parse(fs.readFileSync(f, 'utf8'));
+              const messages = read(process.env.EXECUTION_FILE);
+              // After a wrap-up, the first run's answers count too: a verdict from the right model must not launder
+              // an earlier run on another one.
+              const all = process.env.FIRST_FILE ? [...read(process.env.FIRST_FILE), ...messages] : messages;
               const result = messages.filter(m => m.type === 'result').at(-1);
               // The review is the security gate, so a verdict counts only when every answer came from the gate's
               // model: a fallback model, or a synthetic error message, gives no verdict.
               const models = new Set([
-                messages.find(m => m.type === 'system' && m.subtype === 'init')?.model,
-                ...messages.filter(m => m.type === 'assistant').map(m => m.message?.model),
-                ...Object.keys(result?.modelUsage ?? {}),
+                ...all.filter(m => m.type === 'system' && m.subtype === 'init').map(m => m.model),
+                ...all.filter(m => m.type === 'assistant').map(m => m.message?.model),
+                ...all.filter(m => m.type === 'result').flatMap(m => Object.keys(m.modelUsage ?? {})),
               ].filter(Boolean));
               const wrong = [...models].filter(m => m !== process.env.MODEL);
               const m = /^VERDICT:\s*(CLEAN|FINDINGS)\b/m.exec(result?.result ?? '');
@@ -228,11 +261,19 @@ jobs:
               reason = `no result: ${e.message}`;
             }
             if (reason) core.warning(`Claude review unavailable: ${reason}`);
-            // Claude read untrusted code: neutralise mentions and hidden markers before anything posts it.
+            // Claude read untrusted code, which could ask it to repeat a credential or to mention someone: scrub
+            // the token, anything shaped like one, hidden markers and mentions before anything posts the text.
             const zwsp = String.fromCharCode(0x200b);
+            const scrub = (s) => {
+              let out = s.replace(/<!--/g, '&lt;!--').replace(/@(?=[\w-])/g, '@' + zwsp)
+                .replace(/sk-ant-[\w-]{16,}/g, '[redacted]').replace(/\bgh[pousr]_[A-Za-z0-9]{20,}\b/g, '[redacted]');
+              const token = process.env.TOKEN;
+              if (token && token.length >= 16) out = out.split(token).join('[redacted]');
+              return out;
+            };
             core.setOutput('verdict', verdict);
-            core.setOutput('reason', reason.replace(/<!--/g, '&lt;!--').replace(/@(?=[\w-])/g, '@' + zwsp));
-            core.setOutput('text', text.replace(/<!--/g, '&lt;!--').replace(/@(?=[\w-])/g, '@' + zwsp));
+            core.setOutput('reason', scrub(reason));
+            core.setOutput('text', scrub(text));
 
   post:
     name: Post the Claude review

@@ -3,7 +3,7 @@
 // Usage: node --test
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, writeFileSync, mkdtempSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdtempSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createRequire } from 'node:module';
@@ -248,15 +248,17 @@ async function session(messages) {
   const file = join(mkdtempSync(join(tmpdir(), 'ai-review-')), 'out.json');
   if (messages !== undefined) writeFileSync(file, typeof messages === 'string' ? messages : JSON.stringify(messages));
   const outputs = {}, warnings = [];
-  process.env.EXECUTION_FILE = file;
+  Object.assign(process.env, { EXECUTION_FILE: file, FIRST_FILE: `${file}.first` });
   await findSession(createRequire(import.meta.url), { setOutput: (k, v) => { outputs[k] = v; }, warning: w => warnings.push(w) });
-  return { id: outputs.id, warnings };
+  return { id: outputs.id, warnings, kept: existsSync(`${file}.first`) };
 }
 const ID = '321f3910-abc0-49cb-a020-a5f56662abe6';
 const init = (session_id = ID) => ({ type: 'system', subtype: 'init', session_id });
 
-test('Claude out of turns → its session is resumed for a verdict', async () => {
-  assert.equal((await session([init(), { type: 'result', subtype: 'error_max_turns', is_error: true }])).id, ID);
+test('Claude out of turns → its session is resumed for a verdict, and its answers are kept', async () => {
+  const r = await session([init(), { type: 'result', subtype: 'error_max_turns', is_error: true }]);
+  assert.equal(r.id, ID);
+  assert.equal(r.kept, true);
 });
 
 test('Claude failed for another reason → nothing to resume', async () => {
@@ -277,13 +279,22 @@ test('no execution file → a warning, nothing to resume', async () => {
 const GATE = 'claude-mythos-5-1';
 const answer = (model = GATE) => ({ type: 'assistant', message: { model, content: [{ type: 'text', text: '…' }] } });
 const done = (text, models = [GATE]) => ({ type: 'result', subtype: 'success', is_error: false, result: text, modelUsage: Object.fromEntries(models.map(m => [m, {}])) });
-async function verdict(messages, { token = 'true' } = {}) {
+async function verdict(messages, { token = 'true', first } = {}) {
   const out = {}, warnings = [];
-  Object.assign(process.env, { HAS_TOKEN: token, MODEL: GATE, EXECUTION_FILE: 'x' });
-  const fs = { readFileSync: () => { if (messages === undefined) throw new Error('ENOENT'); return JSON.stringify(messages); } };
+  Object.assign(process.env, { HAS_TOKEN: token, MODEL: GATE, EXECUTION_FILE: 'last', FIRST_FILE: first ? 'first' : '' });
+  const fs = { readFileSync: (f) => { const m = f === 'first' ? first : messages; if (m === undefined) throw new Error('ENOENT'); return JSON.stringify(m); } };
   await extractVerdict(() => fs, { setOutput: (k, v) => { out[k] = v; }, warning: (w) => warnings.push(w) });
   return { ...out, warnings };
 }
+
+test('after a wrap-up, a first run on another model still voids the verdict', async () => {
+  const first = [{ type: 'system', subtype: 'init', model: GATE }, answer('claude-opus-5-5'), { type: 'result', subtype: 'error_max_turns', is_error: true, modelUsage: { 'claude-opus-5-5': {} } }];
+  const r = await verdict([{ type: 'system', subtype: 'init', model: GATE }, answer(), done('VERDICT: CLEAN')], { first });
+  assert.equal(r.verdict, 'unavailable');
+  assert.match(r.reason, /claude-opus-5-5/);
+  const ok = await verdict([{ type: 'system', subtype: 'init', model: GATE }, answer(), done('VERDICT: CLEAN')], { first: [{ type: 'system', subtype: 'init', model: GATE }, answer(), { type: 'result', subtype: 'error_max_turns', is_error: true }] });
+  assert.equal(ok.verdict, 'clean');
+});
 
 test('a clean verdict from the gate model is extracted', async () => {
   const r = await verdict([{ type: 'system', subtype: 'init', model: GATE }, answer(), done('VERDICT: CLEAN')]);
@@ -307,4 +318,14 @@ test('findings text is neutralised before it is posted', async () => {
   const r = await verdict([{ type: 'system', subtype: 'init', model: GATE }, answer(), done('VERDICT: FINDINGS\n1. [P1] a.js:1 — @codex <!-- x -->')]);
   assert.equal(r.verdict, 'findings');
   assert.ok(!r.text.includes('<!--') && !r.text.includes('@codex'));
+});
+
+test('the token, and anything shaped like one, never reaches the comment', async () => {
+  process.env.TOKEN = 'sk-ant-oat01-THE-REAL-TOKEN-VALUE-0123456789';
+  const r = await verdict([{ type: 'system', subtype: 'init', model: GATE }, answer(),
+    done(`VERDICT: FINDINGS\n1. [P0] a.js:1 — leaked ${process.env.TOKEN} and sk-ant-api03-abcdefghijklmnopqrstuvwxyz and ghs_abcdefghijklmnopqrstuvwxyz0123`)]);
+  delete process.env.TOKEN;
+  assert.equal(r.verdict, 'findings');
+  assert.ok(!r.text.includes('THE-REAL-TOKEN') && !r.text.includes('sk-ant-') && !r.text.includes('ghs_'), r.text);
+  assert.equal(r.text.match(/\[redacted\]/g).length, 3);
 });
