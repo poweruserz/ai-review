@@ -383,9 +383,9 @@ jobs:
               else if (search?.status !== 'connected') reason = `the search tools did not start (${search?.status ?? 'absent'}): see the workflow run`;
               else if (!result || result.is_error) reason = `no verdict: ${result?.subtype ?? 'no result'}`;
               else if (!shaped) reason = 'the answer did not follow the verdict format: see the workflow run';
-              // A resumed answer may add the shape, never drop findings: CLEAN after a first answer that named any
-              // is no verdict.
-              else if (head[1] === 'CLEAN' && /(^|\n)VERDICT: FINDINGS|\[P[01]\]/.test(first)) reason = 'the resumed answer dropped the findings of the first one: see the workflow run';
+              // A resumed answer may add the shape, never drop findings: fewer finding lines than the first answer
+              // had, or CLEAN after it said FINDINGS, is no verdict.
+              else if (rest.length < first.split('\n').filter(l => /\[P[01]\]/.test(l)).length || (head[1] === 'CLEAN' && /(^|\n)VERDICT: FINDINGS/.test(first))) reason = 'the resumed answer dropped findings of the first one: see the workflow run';
               else {
                 verdict = head[1].toLowerCase();
                 text = lines.join('\n');

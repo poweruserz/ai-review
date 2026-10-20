@@ -428,11 +428,18 @@ test('a resumed answer cannot drop the findings of the first one', async () => {
     const first = [gateInit(), answer(), done(named)];
     const clean = await verdict([gateInit(), answer(), done('VERDICT: CLEAN\nNot reviewed: none')], { first });
     assert.equal(clean.verdict, 'unavailable', named);
-    assert.match(clean.reason, /dropped the findings/);
+    assert.match(clean.reason, /dropped findings/);
     assert.match(clean.info.join('\n'), /first answer:\n(VERDICT: FINDINGS|I found this:)/);
     const kept = await verdict([gateInit(), answer(), done('VERDICT: FINDINGS\n1. [P1] a.js:1 — x — y → z — w\nNot reviewed: none')], { first });
     assert.equal(kept.verdict, 'findings', named);
   }
+  // Nor some of them: the resumed answer needs at least as many finding lines as the first one had.
+  const two = [gateInit(), answer(), done('Two problems:\n1. [P1] a.js:1 — x\n2. [P0] b.js:2 — y\n\nVERDICT: FINDINGS')];
+  const fewer = await verdict([gateInit(), answer(), done('VERDICT: FINDINGS\n1. [P1] a.js:1 — x — y → z — w\nNot reviewed: none')], { first: two });
+  assert.equal(fewer.verdict, 'unavailable');
+  assert.match(fewer.reason, /dropped findings/);
+  const both = await verdict([gateInit(), answer(), done('VERDICT: FINDINGS\n1. [P1] a.js:1 — x — y → z — w\n2. [P0] b.js:2 — y — z → w — v\nNot reviewed: none')], { first: two });
+  assert.equal(both.verdict, 'findings');
   // Prose that only mentions the severities names no finding.
   const none = [gateInit(), answer(), done('I found no P0 or P1 problems. The shape is 1. [P0|P1] path:line.\n\nVERDICT: CLEAN')];
   assert.equal((await verdict([gateInit(), answer(), done('VERDICT: CLEAN\nNot reviewed: none')], { first: none })).verdict, 'clean');
