@@ -379,6 +379,17 @@ test('a failed search-tool setup is named as the reason', async () => {
   assert.match(r.reason, /search tools could not be set up/);
 });
 
+test('files a wrap-up never read become a finding', async () => {
+  const clean = await verdict([gateInit(), answer(), done('VERDICT: CLEAN\nNot reviewed: src/a.js, src/b.js')]);
+  assert.equal(clean.verdict, 'findings');
+  assert.equal(clean.text, 'VERDICT: FINDINGS\n1. [P1] src/a.js, src/b.js — not reviewed: the review ran out of turns before reading these — review them yourself before merging');
+  const more = await verdict([gateInit(), answer(), done('VERDICT: FINDINGS\n1. [P0] x.js:1 — a — b → c — d\nNot reviewed: y.js')]);
+  assert.equal(more.verdict, 'findings');
+  assert.match(more.text, /^VERDICT: FINDINGS\n1\. \[P0\] x\.js:1 .*\n2\. \[P1\] y\.js — not reviewed/);
+  const none = await verdict([gateInit(), answer(), done('VERDICT: CLEAN\nNot reviewed: none')]);
+  assert.equal(none.verdict, 'clean');
+});
+
 test('a FINDINGS answer with any other line gives no verdict', async () => {
   for (const bad of ['VERDICT: FINDINGS\n1. [P1] a.js:1 — x\nAlso, note that…', 'VERDICT: FINDINGS\n1. [P1] a.js:1 — x\n  continued here']) {
     const r = await verdict([gateInit(), answer(), done(bad)]);
