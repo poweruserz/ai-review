@@ -388,6 +388,11 @@ test('files a wrap-up never read become a finding', async () => {
   assert.match(more.text, /^VERDICT: FINDINGS\n1\. \[P0\] x\.js:1 .*\n2\. \[P1\] y\.js — not reviewed/);
   const none = await verdict([gateInit(), answer(), done('VERDICT: CLEAN\nNot reviewed: none')]);
   assert.equal(none.verdict, 'clean');
+  for (const bad of ['VERDICT: CLEAN\nNot reviewed: none\nNot reviewed: src/unread.js', 'VERDICT: FINDINGS\nNot reviewed: none\n1. [P1] a.js:1 — x']) {
+    const r = await verdict([gateInit(), answer(), done(bad)]);
+    assert.equal(r.verdict, 'unavailable', bad);
+    assert.match(r.reason, /verdict format/);
+  }
 });
 
 test('a FINDINGS answer with any other line gives no verdict', async () => {
