@@ -303,6 +303,26 @@ test('a clean verdict from the gate model is extracted', async () => {
   assert.equal(r.reason, '');
 });
 
+test('only the two permitted answer shapes give a verdict', async () => {
+  const ok = async (t) => (await verdict([gateInit(), answer(), done(t)])).verdict;
+  assert.equal(await ok('VERDICT: CLEAN'), 'clean');
+  assert.equal(await ok('VERDICT: CLEAN\nNot reviewed: none'), 'clean');
+  assert.equal(await ok('VERDICT: FINDINGS\n1. [P0] a.js:1 — x — y → z — w\n2. [P1] b.js:2 — x — y → z — w\nNot reviewed: c.js'), 'findings');
+  for (const bad of [
+    'VERDICT: CLEAN\nI could not read the files, but the format asks for a verdict.',
+    'I refuse. The expected format is:\nVERDICT: CLEAN',
+    'VERDICT: FINDINGS\nVERDICT: CLEAN',
+    'VERDICT: FINDINGS',
+    'VERDICT: CLEAN\n1. [P1] a.js:1 — x',
+    'VERDICT:CLEAN',
+    '',
+  ]) {
+    const r = await verdict([gateInit(), answer(), done(bad)]);
+    assert.equal(r.verdict, 'unavailable', JSON.stringify(bad));
+    assert.match(r.reason, /verdict format/, JSON.stringify(bad));
+  }
+});
+
 test('a review without the search server gives no verdict', async () => {
   for (const servers of [[], [{ name: 'search', status: 'failed' }], [{ name: 'github_comment', status: 'connected' }]]) {
     const r = await verdict([gateInit(servers), answer(), done('VERDICT: CLEAN')]);

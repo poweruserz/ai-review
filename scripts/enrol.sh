@@ -65,9 +65,9 @@ ensure_ruleset() {
 if live="$(gh api "repos/$OWNER/$REPO/contents/.github/workflows/ai-review.yml?ref=$branch" --jq .content 2>/dev/null)"; then
   ensure_ruleset
   if [ "$(printf '%s' "$live" | base64 -d)" = "$(cat "$here/../caller.yml")" ]; then say "caller up to date on $branch"; exit 0; fi
-  open_pr="$(gh pr list -R "$OWNER/$REPO" --head ci/ai-review-update --state open --json url --jq '.[0].url // ""')"
-  if [ -n "$open_pr" ]; then say "update PR already open: $open_pr"; exit 0; fi
-  # The old caller on the default branch still wakes the coordinator on Codex's comments, so no re-run is needed here.
+  open_pr="$(gh pr list -R "$OWNER/$REPO" --head ci/ai-review-update --state open --json number --jq '.[0].number // ""')"
+  # The old caller on the default branch wakes the coordinator on Codex's comments, but not on a ruling.
+  if [ -n "$open_pr" ]; then exec bash "$here/recheck.sh" "$REPO" "$open_pr"; fi
   caller_pr ci/ai-review-update "Update AI review: Claude reviews every pull request" \
     'Updates `.github/workflows/ai-review.yml` to the current [poweruserz/ai-review](https://github.com/poweruserz/ai-review) caller: Claude (Mythos 5.1, max effort, through the owner'"'"'s subscription) replaces GLM next to Codex, and the review is the security gate, so the session merges on `ai-review` success without a separate local gate.'
   exit 0

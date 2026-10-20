@@ -98,10 +98,12 @@ jobs:
 
       - name: Write the pull request diff
         run: |
-          git diff --merge-base "$BASE_SHA" "$HEAD_SHA" > .ai-review.diff
-          # A symlink in the tree could point Read at /proc or the home directory past the path rules below; the
-          # diff above already shows what each one pointed to.
+          # A symlink in the tree could point Read at /proc or the home directory past the path rules below, or make
+          # the redirection below overwrite a file outside the checkout, so they go first; the diff still shows what
+          # each one pointed to, since it comes from the commits.
           find . -path ./.git -prune -o -type l -print -exec rm -f {} + | sed 's/^/removed symlink: /'
+          rm -f .ai-review.diff
+          git diff --merge-base "$BASE_SHA" "$HEAD_SHA" > .ai-review.diff
 
       # Grep and glob for the reviewer, as a read-only MCP server over git with no shell (native Claude Code builds
       # dropped the Grep and Glob tools).
@@ -346,11 +348,20 @@ jobs:
               // The review was promised grep and glob; without the server it ran blind, and the action drops the
               // config silently (anthropics/claude-code-action#1004), so the init message has to prove it started.
               const search = all.filter(m => m.type === 'system' && m.subtype === 'init').flatMap(m => m.mcp_servers ?? []).find(s => s.name === 'search');
-              const m = /^VERDICT:\s*(CLEAN|FINDINGS)\b/m.exec(result?.result ?? '');
+              // The whole answer must be one of the two permitted shapes: a verdict line first, then only finding
+              // lines (FINDINGS) or nothing (CLEAN), plus the wrap-up's "Not reviewed" line. A refusal or an
+              // injected reply that quotes the format somewhere inside gives no verdict.
+              const lines = (result?.result ?? '').trim().split('\n').map(l => l.trimEnd()).filter(Boolean);
+              const head = /^VERDICT: (CLEAN|FINDINGS)$/.exec(lines[0] ?? '');
+              const rest = lines.slice(1).filter(l => !/^Not reviewed: /.test(l));
+              const findings = rest.filter(l => /^\d+\. \[P[01]\] .+/.test(l)).length;
+              const shaped = head && !rest.some(l => /^VERDICT:/.test(l))
+                && (head[1] === 'CLEAN' ? rest.length === 0 : findings > 0);
               if (wrong.length) reason = `answers from ${wrong.join(', ')}, not ${process.env.MODEL}`;
               else if (search?.status !== 'connected') reason = `the search tools did not start (${search?.status ?? 'absent'}): see the workflow run`;
-              else if (!m || result.is_error) reason = `no verdict: ${result?.subtype ?? 'no result'}`;
-              else { verdict = m[1].toLowerCase(); text = result.result.trim(); }
+              else if (!result || result.is_error) reason = `no verdict: ${result?.subtype ?? 'no result'}`;
+              else if (!shaped) reason = 'the answer did not follow the verdict format: see the workflow run';
+              else { verdict = head[1].toLowerCase(); text = lines.join('\n'); }
             } catch (e) {
               reason = `no result: ${e.message}`;
             }
