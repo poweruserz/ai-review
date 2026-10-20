@@ -56,6 +56,15 @@ test('glob spans directories with ** and stays within one with *', async () => {
   assert.equal(text(await call('tools/call', { name: 'glob', arguments: { pattern: 'src/**' } })), 'src/deep/users.js\nsrc/hello.txt');
 });
 
+test('a bad regex is an error, not "no matches"; a path with nothing under it is "no matches"', async () => {
+  for (const pattern of ['(?=foo)', 'foo(', '[']) {
+    const bad = await call('tools/call', { name: 'grep', arguments: { pattern } });
+    assert.equal(bad.result.isError, true, pattern);
+    assert.match(text(bad), /git grep failed/);
+  }
+  assert.equal(text(await call('tools/call', { name: 'grep', arguments: { pattern: 'x', path: 'nope/' } })), 'no matches');
+});
+
 test('a path outside the repository is refused', async () => {
   for (const path of ['../', '/etc', '~/x', 'src/../../x', '--help']) {
     const r = await call('tools/call', { name: 'grep', arguments: { pattern: 'x', path } });

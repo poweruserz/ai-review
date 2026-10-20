@@ -5,8 +5,10 @@
 import { execFile } from 'node:child_process';
 import { createInterface } from 'node:readline';
 
-const git = (args) => new Promise((resolve) => execFile('git', args, { cwd: process.cwd(), encoding: 'utf8', maxBuffer: 16 << 20 },
-  (err, out) => resolve(err && !out ? '' : out))); // git grep exits 1 on no match and 128 on a bad path: both read as empty
+// git grep exits 1 on no match, which is an answer; any other failure (a bad regex, a bad path) is reported, never
+// passed off as "no matches", since the reviewer would take that as proof of absence.
+const git = (args) => new Promise((resolve, reject) => execFile('git', args, { cwd: process.cwd(), encoding: 'utf8', maxBuffer: 16 << 20 },
+  (err, out, stderr) => (!err || (err.code === 1 && !stderr) ? resolve(out) : reject(new Error(`git ${args[0]} failed: ${(stderr || err.message).trim().split('\n')[0]}`)))));
 const clip = (text, max) => {
   const lines = text.split('\n').filter(Boolean).map(l => (l.length > 400 ? `${l.slice(0, 400)}…` : l));
   if (lines.length > max) lines.splice(max, lines.length, `… ${lines.length - max} more lines not shown; narrow the search`);
