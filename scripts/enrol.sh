@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Enrols one repository in the AI review pipeline: its ZAI_API_KEY secret, a review-only dreamfyre runner for
 # a private repository (user gha-review, label dreamfyre-review), and a pull request that adds caller.yml as
-# .github/workflows/ai-review.yml.
+# .github/workflows/ai-review.yml. Run it again after that pull request merges to add the ruleset that makes
+# merging need ai-review success.
 # Run from the owner's machine (needs gh and `wsl -e ssh dreamfyre`). Every step is skipped when done,
 # so re-running is safe.
 # Usage: ZAI_KEY_FILE=<file> scripts/enrol.sh <repo>
@@ -33,7 +34,17 @@ if [ "$private" = true ]; then
 fi
 
 if gh api "repos/$OWNER/$REPO/contents/.github/workflows/ai-review.yml?ref=$branch" >/dev/null 2>&1; then
-  say "caller already on $branch"; exit 0
+  say "caller already on $branch"
+  # Only once the caller has merged: before that, the enrolment pull request never gets a final status.
+  # A plain assignment, so that set -e stops the script when the lookup fails instead of skipping the ruleset.
+  rulesets="$(gh api "repos/$OWNER/$REPO/rulesets" --jq '[.[] | select(.name == "ai-review required")] | length')"
+  if [ "$rulesets" = 0 ]; then
+    gh api -X POST "repos/$OWNER/$REPO/rulesets" --input "$here/ruleset.json" >/dev/null
+    say "ruleset added: merging into $branch needs ai-review success"
+  else
+    say "ruleset already there"
+  fi
+  exit 0
 fi
 open_pr="$(gh pr list -R "$OWNER/$REPO" --head ci/ai-review --state open --json url --jq '.[0].url // ""')"
 if [ -n "$open_pr" ]; then say "PR already open: $open_pr"; exit 0; fi

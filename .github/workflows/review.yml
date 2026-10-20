@@ -51,6 +51,7 @@ jobs:
       && github.event.pull_request.head.repo.full_name == github.repository
       && !github.event.pull_request.draft
       && github.actor != 'dependabot[bot]'
+      && github.event.pull_request.base.ref == github.event.repository.default_branch
     runs-on: ${{ github.event.repository.private && fromJSON('["self-hosted","dreamfyre-review"]') || 'ubuntu-latest' }}
     timeout-minutes: 65 # the GLM step's 45 and the wrap-up's 10, plus room for checkout, setup and extraction
     concurrency:
@@ -293,6 +294,15 @@ jobs:
             const status = (state, description) => github.rest.repos.createCommitStatus({
               owner, repo, sha: head, state, context: 'ai-review', description: description.slice(0, 140),
             });
+            // The ruleset guards only the default branch, and retargeting a pull request runs nothing here, so a
+            // success computed against another base would carry over unreviewed: only the default branch gets one.
+            const defaultBranch = context.payload.repository.default_branch;
+            // After retargeting, only a new commit is safe: Codex's state is keyed by head SHA alone, so a reopen
+            // could count its review against the old base as done.
+            if (pr.base.ref !== defaultBranch) {
+              await status('error', `into ${pr.base.ref}, not ${defaultBranch}: not reviewed; after retargeting, push a new commit`);
+              return;
+            }
             const comments = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number: pull_number, per_page: 100 });
 
             // Codex keeps one summary comment per PR and edits its machine-readable state as reviews finish.
@@ -340,7 +350,10 @@ jobs:
 
             const codexWaiting = !codexDone && !codexFindings;
             if (codexWaiting || !glmVerdict) {
-              await status('pending', `waiting for ${[codexWaiting && 'Codex', !glmVerdict && 'GLM'].filter(Boolean).join(' and ')}`);
+              // Codex skips a push that lands while it is still reviewing the one before, so name the commit it last
+              // reviewed: if that stays behind the head, a session asks Codex for a review.
+              const behind = codexWaiting && codex?.code_review?.commit_sha && codex.code_review.commit_sha !== head;
+              await status('pending', `waiting for ${[codexWaiting && 'Codex', !glmVerdict && 'GLM'].filter(Boolean).join(' and ')}${behind ? `; Codex last reviewed ${codex.code_review.commit_sha.slice(0, 7)}` : ''}`);
               return;
             }
             if (!codexFindings && glmVerdict !== 'findings') {

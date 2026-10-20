@@ -45,10 +45,10 @@ function threadsFromState(comments) {
   return m && JSON.parse(m[1]).code_review?.has_unresolved_findings ? [thread(false)] : [];
 }
 
-async function run(comments, { hasPat = 'true', maxRounds = '3', asker = 'o', threads, codexFixes = 'true', author = 'o' } = {}) {
+async function run(comments, { hasPat = 'true', maxRounds = '3', asker = 'o', threads, codexFixes = 'true', author = 'o', base = 'main' } = {}) {
   const statuses = [];
   const outputs = {};
-  const pr = { state: 'open', draft: false, user: { login: author }, head: { sha: HEAD, repo: { full_name: 'o/r' } } };
+  const pr = { state: 'open', draft: false, user: { login: author }, base: { ref: base }, head: { sha: HEAD, repo: { full_name: 'o/r' } } };
   const nodes = threads ?? threadsFromState(comments);
   const github = {
     paginate: async () => comments,
@@ -60,7 +60,7 @@ async function run(comments, { hasPat = 'true', maxRounds = '3', asker = 'o', th
     },
   };
   Object.assign(process.env, { PR_NUMBER: '7', MAX_ROUNDS: maxRounds, HAS_PAT: hasPat, ASKER: asker, CODEX_FIXES: codexFixes });
-  await decide(github, { repo: { owner: 'o', repo: 'r' } }, { setOutput: (k, v) => { outputs[k] = v; } });
+  await decide(github, { repo: { owner: 'o', repo: 'r' }, payload: { repository: { default_branch: 'main' } } }, { setOutput: (k, v) => { outputs[k] = v; } });
   return { statuses, outputs };
 }
 
@@ -73,6 +73,16 @@ test('both clean on the head → success', async () => {
 test('Dependabot pull request → no status, since GLM never reviews it', async () => {
   const r = await run([codexState({ code_review: review(HEAD, false), security_review: review(HEAD, false) })], { author: 'dependabot[bot]' });
   assert.deepEqual(r.statuses, []);
+});
+
+test('pull request into another branch → error, so retargeting it cannot carry a success over', async () => {
+  const r = await run([codexState({ code_review: review(HEAD, false), security_review: review(HEAD, false) }), glmComment(HEAD, 'clean', 'VERDICT: CLEAN')], { base: 'feature' });
+  assert.deepEqual(r.statuses, ['error: into feature, not main: not reviewed; after retargeting, push a new commit']);
+});
+
+test('Codex still on an older commit → waiting, naming the commit it last reviewed', async () => {
+  const r = await run([codexState({ code_review: review(OLD, false), security_review: review(OLD, false) }), glmComment(HEAD, 'clean', 'VERDICT: CLEAN')]);
+  assert.deepEqual(r.statuses, ['pending: waiting for Codex; Codex last reviewed bbbbbbb']);
 });
 
 test('GLM not in yet → pending', async () => {
