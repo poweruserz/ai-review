@@ -95,6 +95,12 @@ jobs:
           # diff above already shows what each one pointed to.
           find . -path ./.git -prune -o -type l -print -exec rm -f {} + | sed 's/^/removed symlink: /'
 
+      # The search server below runs on node, which the dreamfyre review runners do not have on PATH.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        if: env.HAS_TOKEN == 'true'
+        with:
+          node-version: 24
+
       # Grep and glob for the reviewer, as a read-only MCP server over git with no shell (native Claude Code builds
       # dropped the Grep and Glob tools).
       - name: Set up the search tools
@@ -181,10 +187,8 @@ jobs:
             }
           });
           SEARCH_MCP
-          # The runner's own node (what actions/github-script runs on) when none is on PATH, as on the dreamfyre review runners.
-          node="$(command -v node || ls "$RUNNER_TEMP"/../../externals/node2*/bin/node 2>/dev/null | tail -n 1)"
-          "$node" --version >/dev/null
-          "$node" -e 'require("fs").writeFileSync(process.argv[1], JSON.stringify({ mcpServers: { search: { command: process.argv[2], args: [process.argv[3]] } } }))' \
+          node="$(command -v node)"
+          node -e 'require("fs").writeFileSync(process.argv[1], JSON.stringify({ mcpServers: { search: { command: process.argv[2], args: [process.argv[3]] } } }))' \
             "$RUNNER_TEMP/search-mcp.json" "$node" "$RUNNER_TEMP/search-mcp.mjs"
           echo "config=$RUNNER_TEMP/search-mcp.json" >> "$GITHUB_OUTPUT"
 
