@@ -279,6 +279,7 @@ test('no execution file → a warning, nothing to resume', async () => {
 const GATE = 'claude-mythos-5-1';
 const answer = (model = GATE) => ({ type: 'assistant', message: { model, content: [{ type: 'text', text: '…' }] } });
 const done = (text, models = [GATE]) => ({ type: 'result', subtype: 'success', is_error: false, result: text, modelUsage: Object.fromEntries(models.map(m => [m, {}])) });
+const gateInit = (servers = [{ name: 'search', status: 'connected' }]) => ({ type: 'system', subtype: 'init', model: GATE, mcp_servers: servers });
 async function verdict(messages, { token = 'true', first } = {}) {
   const out = {}, warnings = [];
   Object.assign(process.env, { HAS_TOKEN: token, MODEL: GATE, EXECUTION_FILE: 'last', FIRST_FILE: first ? 'first' : '' });
@@ -288,22 +289,30 @@ async function verdict(messages, { token = 'true', first } = {}) {
 }
 
 test('after a wrap-up, a first run on another model still voids the verdict', async () => {
-  const first = [{ type: 'system', subtype: 'init', model: GATE }, answer('claude-opus-5-5'), { type: 'result', subtype: 'error_max_turns', is_error: true, modelUsage: { 'claude-opus-5-5': {} } }];
-  const r = await verdict([{ type: 'system', subtype: 'init', model: GATE }, answer(), done('VERDICT: CLEAN')], { first });
+  const first = [gateInit(), answer('claude-opus-5-5'), { type: 'result', subtype: 'error_max_turns', is_error: true, modelUsage: { 'claude-opus-5-5': {} } }];
+  const r = await verdict([gateInit(), answer(), done('VERDICT: CLEAN')], { first });
   assert.equal(r.verdict, 'unavailable');
   assert.match(r.reason, /claude-opus-5-5/);
-  const ok = await verdict([{ type: 'system', subtype: 'init', model: GATE }, answer(), done('VERDICT: CLEAN')], { first: [{ type: 'system', subtype: 'init', model: GATE }, answer(), { type: 'result', subtype: 'error_max_turns', is_error: true }] });
+  const ok = await verdict([gateInit(), answer(), done('VERDICT: CLEAN')], { first: [gateInit(), answer(), { type: 'result', subtype: 'error_max_turns', is_error: true }] });
   assert.equal(ok.verdict, 'clean');
 });
 
 test('a clean verdict from the gate model is extracted', async () => {
-  const r = await verdict([{ type: 'system', subtype: 'init', model: GATE }, answer(), done('VERDICT: CLEAN')]);
+  const r = await verdict([gateInit(), answer(), done('VERDICT: CLEAN')]);
   assert.equal(r.verdict, 'clean');
   assert.equal(r.reason, '');
 });
 
+test('a review without the search server gives no verdict', async () => {
+  for (const servers of [[], [{ name: 'search', status: 'failed' }], [{ name: 'github_comment', status: 'connected' }]]) {
+    const r = await verdict([gateInit(servers), answer(), done('VERDICT: CLEAN')]);
+    assert.equal(r.verdict, 'unavailable');
+    assert.match(r.reason, /search tools did not start/);
+  }
+});
+
 test('an answer from another model gives no verdict', async () => {
-  const r = await verdict([{ type: 'system', subtype: 'init', model: GATE }, answer('claude-opus-5-5'), done('VERDICT: CLEAN', [GATE, 'claude-opus-5-5'])]);
+  const r = await verdict([gateInit(), answer('claude-opus-5-5'), done('VERDICT: CLEAN', [GATE, 'claude-opus-5-5'])]);
   assert.equal(r.verdict, 'unavailable');
   assert.match(r.reason, /claude-opus-5-5, not claude-mythos-5-1/);
 });
@@ -315,7 +324,7 @@ test('a missing token is named as the reason', async () => {
 });
 
 test('findings text is neutralised before it is posted', async () => {
-  const r = await verdict([{ type: 'system', subtype: 'init', model: GATE }, answer(), done('VERDICT: FINDINGS\n1. [P1] a.js:1 — @codex <!-- x -->')]);
+  const r = await verdict([gateInit(), answer(), done('VERDICT: FINDINGS\n1. [P1] a.js:1 — @codex <!-- x -->')]);
   assert.equal(r.verdict, 'findings');
   assert.ok(!r.text.includes('<!--') && !r.text.includes('@codex'));
 });
@@ -337,7 +346,7 @@ test('a failed search-tool setup is named as the reason', async () => {
 });
 
 test('private keys and other credential shapes are scrubbed', async () => {
-  const r = await verdict([{ type: 'system', subtype: 'init', model: GATE }, answer(),
+  const r = await verdict([gateInit(), answer(),
     done('VERDICT: FINDINGS\n1. [P0] k.pem:1 — -----BEGIN RSA PRIVATE KEY-----\nMIIE...\n-----END RSA PRIVATE KEY----- AKIAABCDEFGHIJKLMNOP github_pat_abcdefghijklmnopqrstuvwxyz xoxb-1234567890-abc')]);
   assert.equal(r.text.match(/\[redacted\]/g).length, 4, r.text);
   assert.ok(!/BEGIN|AKIA|github_pat|xoxb/.test(r.text));
@@ -345,7 +354,7 @@ test('private keys and other credential shapes are scrubbed', async () => {
 
 test('the token, and anything shaped like one, never reaches the comment', async () => {
   process.env.TOKEN = 'sk-ant-oat01-THE-REAL-TOKEN-VALUE-0123456789';
-  const r = await verdict([{ type: 'system', subtype: 'init', model: GATE }, answer(),
+  const r = await verdict([gateInit(), answer(),
     done(`VERDICT: FINDINGS\n1. [P0] a.js:1 — leaked ${process.env.TOKEN} and sk-ant-api03-abcdefghijklmnopqrstuvwxyz and ghs_abcdefghijklmnopqrstuvwxyz0123`)]);
   delete process.env.TOKEN;
   assert.equal(r.verdict, 'findings');

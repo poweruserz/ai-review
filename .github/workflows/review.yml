@@ -190,9 +190,9 @@ jobs:
           });
           SEARCH_MCP
           node="$(command -v node)"
-          node -e 'require("fs").writeFileSync(process.argv[1], JSON.stringify({ mcpServers: { search: { command: process.argv[2], args: [process.argv[3]] } } }))' \
-            "$RUNNER_TEMP/search-mcp.json" "$node" "$RUNNER_TEMP/search-mcp.mjs"
-          echo "config=$RUNNER_TEMP/search-mcp.json" >> "$GITHUB_OUTPUT"
+          # Inline JSON, not a file: the action merges only inline --mcp-config values with its own servers and
+          # drops a file path on the floor (anthropics/claude-code-action#1004).
+          echo "json=$(node -e 'console.log(JSON.stringify({ mcpServers: { search: { command: process.argv[1], args: [process.argv[2]] } } }))' "$node" "$RUNNER_TEMP/search-mcp.mjs")" >> "$GITHUB_OUTPUT"
 
       - name: Claude review
         id: claude
@@ -224,8 +224,8 @@ jobs:
             --restricted
             --tools Read
             --allowedTools Read,mcp__search__grep,mcp__search__glob
-            --disallowedTools "Read(//proc/**),Read(//sys/**),Read(//dev/**),Read(//etc/**),Read(//run/**),Read(//var/**),Read(//tmp/**),Read(//root/**),Read(~/.*),Read(~/.*/**),Read(**/.credentials*),Read(**/.runner),Read(**/.env),Read(**/.env.*)"
-            --mcp-config ${{ steps.search.outputs.config }}
+            --disallowedTools "Read(//proc/**),Read(//sys/**),Read(//dev/**),Read(//etc/**),Read(//run/**),Read(//var/**),Read(//tmp/**),Read(//root/**),Read(~/.*),Read(~/.*/**),Read(**/.credentials*),Read(**/.runner),Read(**/.env),Read(**/.env.*),mcp__github_comment,mcp__github_inline_comment,mcp__github_ci,mcp__github"
+            --mcp-config '${{ steps.search.outputs.json }}'
             --strict-mcp-config
             --max-turns ${{ inputs.glm-max-turns || inputs.max-turns }}
           prompt: |
@@ -343,8 +343,12 @@ jobs:
                 ...all.filter(m => m.type === 'result').flatMap(m => Object.keys(m.modelUsage ?? {})),
               ].filter(Boolean));
               const wrong = [...models].filter(m => m !== process.env.MODEL);
+              // The review was promised grep and glob; without the server it ran blind, and the action drops the
+              // config silently (anthropics/claude-code-action#1004), so the init message has to prove it started.
+              const search = all.filter(m => m.type === 'system' && m.subtype === 'init').flatMap(m => m.mcp_servers ?? []).find(s => s.name === 'search');
               const m = /^VERDICT:\s*(CLEAN|FINDINGS)\b/m.exec(result?.result ?? '');
               if (wrong.length) reason = `answers from ${wrong.join(', ')}, not ${process.env.MODEL}`;
+              else if (search?.status !== 'connected') reason = `the search tools did not start (${search?.status ?? 'absent'}): see the workflow run`;
               else if (!m || result.is_error) reason = `no verdict: ${result?.subtype ?? 'no result'}`;
               else { verdict = m[1].toLowerCase(); text = result.result.trim(); }
             } catch (e) {
