@@ -297,8 +297,10 @@ jobs:
             // The ruleset guards only the default branch, and retargeting a pull request runs nothing here, so a
             // success computed against another base would carry over unreviewed: only the default branch gets one.
             const defaultBranch = context.payload.repository.default_branch;
+            // After retargeting, only a new commit is safe: Codex's state is keyed by head SHA alone, so a reopen
+            // could count its review against the old base as done.
             if (pr.base.ref !== defaultBranch) {
-              await status('error', `into ${pr.base.ref}, not ${defaultBranch}: not reviewed; after retargeting, push or close and reopen`);
+              await status('error', `into ${pr.base.ref}, not ${defaultBranch}: not reviewed; after retargeting, push a new commit`);
               return;
             }
             const comments = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number: pull_number, per_page: 100 });

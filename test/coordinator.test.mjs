@@ -77,7 +77,7 @@ test('Dependabot pull request → no status, since GLM never reviews it', async 
 
 test('pull request into another branch → error, so retargeting it cannot carry a success over', async () => {
   const r = await run([codexState({ code_review: review(HEAD, false), security_review: review(HEAD, false) }), glmComment(HEAD, 'clean', 'VERDICT: CLEAN')], { base: 'feature' });
-  assert.deepEqual(r.statuses, ['error: into feature, not main: not reviewed; after retargeting, push or close and reopen']);
+  assert.deepEqual(r.statuses, ['error: into feature, not main: not reviewed; after retargeting, push a new commit']);
 });
 
 test('Codex still on an older commit → waiting, naming the commit it last reviewed', async () => {
