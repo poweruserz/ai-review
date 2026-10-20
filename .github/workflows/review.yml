@@ -91,8 +91,8 @@ jobs:
         continue-on-error: true # a GLM outage must not block the pipeline; Codex and the Claude gate still apply
         # Must end well before the job's 65, which also covers the steps around this one: a job timeout cancels the
         # job, so no "unavailable" comment would be posted and the coordinator would wait for GLM forever. A step
-        # timeout is a plain failure that continue-on-error absorbs. GLM at max effort takes 16-22 s a turn, so
-        # 100 turns end before 45 minutes and the wrap-up below can still run.
+        # timeout is a plain failure that continue-on-error absorbs. The longest of 78 reviews on 2026-10-19/20 took
+        # 24 minutes (84 turns, which count tool calls), so 45 still leaves the wrap-up below its time.
         timeout-minutes: 45
         uses: anthropics/claude-code-action@5eb090f3c3afd701a0672cd32981197ca27688f6 # v1
         with:
@@ -100,14 +100,17 @@ jobs:
           github_token: ${{ github.token }}
           allowed_bots: chatgpt-codex-connector # Codex's fix pushes start this job
           # --tools removes every other built-in tool (subagents, cron, skills); --allowedTools only skips prompts.
+          # Read is all there is: native Claude Code builds dropped Grep and Glob in 2.1.117 for search through Bash,
+          # which stays off because this job holds the Z.ai key.
           # --restricted and --strict-mcp-config keep a pull request's .claude/settings.json hooks and .mcp.json
           # servers from running on the shared runner (the action sets enableAllProjectMcpServers).
-          # Without --effort Claude Code sends "high"; Z.ai recommends max for coding (GLM-5.3's deepest reasoning).
+          # Max, not lower (measured 2026-10-20): low ran 10x faster but found none of max's findings that Codex
+          # missed, and high ran as slow as max. Almost all of GLM's time is this thinking.
           claude_args: >-
             --effort max
             --restricted
-            --tools Read,Grep,Glob
-            --allowedTools Read,Grep,Glob
+            --tools Read
+            --allowedTools Read
             --disallowedTools "mcp__*"
             --strict-mcp-config
             --max-turns ${{ inputs.glm-max-turns }}
@@ -117,8 +120,10 @@ jobs:
 
             Read ./.ai-review.diff whole, in one Read call with allow_large: true (it can be larger than Read's
             default limit, and reading it in parts wastes turns). Then read as much surrounding code as you need
-            to judge each change. Every tool call uses one of a limited number of turns, so on a large diff open
-            only the files where a change could cause one of the problems below.
+            to judge each change. Your only tool is Read: there is no search. When you need several files, request
+            them all in one message as parallel tool calls, because every message costs a full round trip. Every
+            tool call also uses one of a limited number of turns, so on a large diff open only the files where a
+            change could cause one of the problems below.
             Report only consequential problems: wrong results, security holes, data loss or exposure,
             swallowed errors, races, and behavior changes that look unintended. No style, naming,
             formatting, documentation or "could be simpler" remarks. Follow any "## Code Review Rules"
@@ -174,8 +179,8 @@ jobs:
             --resume ${{ steps.session.outputs.id }}
             --effort max
             --restricted
-            --tools Read,Grep,Glob
-            --disallowedTools Read,Grep,Glob "mcp__*"
+            --tools Read
+            --disallowedTools Read "mcp__*"
             --strict-mcp-config
             --max-turns 3
           prompt: |
