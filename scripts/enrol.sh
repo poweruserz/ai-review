@@ -69,7 +69,7 @@ if live="$(gh api "repos/$OWNER/$REPO/contents/.github/workflows/ai-review.yml?r
   # The old caller on the default branch wakes the coordinator on Codex's comments, but not on a ruling.
   if [ -n "$open_pr" ]; then exec bash "$here/recheck.sh" "$REPO" "$open_pr"; fi
   caller_pr ci/ai-review-update "Update AI review: Claude reviews every pull request" \
-    'Updates `.github/workflows/ai-review.yml` to the current [poweruserz/ai-review](https://github.com/poweruserz/ai-review) caller: Claude (Mythos 5.1, max effort, through the owner'"'"'s subscription) replaces GLM next to Codex, and the review is the security gate, so the session merges on `ai-review` success without a separate local gate.'
+    'Updates `.github/workflows/ai-review.yml` to the current [poweruserz/ai-review](https://github.com/poweruserz/ai-review) caller: Claude (Opus 5.5, max effort, through the owner'"'"'s subscription) replaces GLM next to Codex, and the review is the security gate, so the session merges on `ai-review` success without a separate local gate.'
   exit 0
 fi
 open_pr="$(gh pr list -R "$OWNER/$REPO" --head ci/ai-review --state open --json number --jq '.[0].number // ""')"
@@ -83,6 +83,6 @@ if [ -n "$open_pr" ]; then
 fi
 
 caller_pr ci/ai-review "Add AI review: Codex and Claude review every pull request" \
-  'Adds `.github/workflows/ai-review.yml`, the caller for [poweruserz/ai-review](https://github.com/poweruserz/ai-review): Claude (Mythos 5.1, max effort) reviews every pull request head next to Codex, and a coordinator sets commit status `ai-review` (success, failure = findings for the Claude session, error).
+  'Adds `.github/workflows/ai-review.yml`, the caller for [poweruserz/ai-review](https://github.com/poweruserz/ai-review): Claude (Opus 5.5, max effort) reviews every pull request head next to Codex, and a coordinator sets commit status `ai-review` (success, failure = findings for the Claude session, error).
 
 The coordinator'"'"'s `issue_comment` trigger runs from the default branch, so until this merges, `scripts/enrol.sh` run again re-runs the coordinator here.'

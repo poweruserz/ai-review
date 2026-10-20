@@ -276,7 +276,7 @@ test('no execution file → a warning, nothing to resume', async () => {
 });
 
 // The verdict extractor: a verdict counts only when every answer came from the gate's model.
-const GATE = 'claude-mythos-5-1';
+const GATE = 'claude-opus-5-5';
 const answer = (model = GATE) => ({ type: 'assistant', message: { model, content: [{ type: 'text', text: '…' }] } });
 const done = (text, models = [GATE]) => ({ type: 'result', subtype: 'success', is_error: false, result: text, modelUsage: Object.fromEntries(models.map(m => [m, {}])) });
 const gateInit = (servers = [{ name: 'search', status: 'connected' }]) => ({ type: 'system', subtype: 'init', model: GATE, mcp_servers: servers });
@@ -289,10 +289,10 @@ async function verdict(messages, { token = 'true', first } = {}) {
 }
 
 test('after a wrap-up, a first run on another model still voids the verdict', async () => {
-  const first = [gateInit(), answer('claude-opus-5-5'), { type: 'result', subtype: 'error_max_turns', is_error: true, modelUsage: { 'claude-opus-5-5': {} } }];
+  const first = [gateInit(), answer('claude-mythos-5-1'), { type: 'result', subtype: 'error_max_turns', is_error: true, modelUsage: { 'claude-mythos-5-1': {} } }];
   const r = await verdict([gateInit(), answer(), done('VERDICT: CLEAN')], { first });
   assert.equal(r.verdict, 'unavailable');
-  assert.match(r.reason, /claude-opus-5-5/);
+  assert.match(r.reason, /claude-mythos-5-1/);
   const ok = await verdict([gateInit(), answer(), done('VERDICT: CLEAN')], { first: [gateInit(), answer(), { type: 'result', subtype: 'error_max_turns', is_error: true }] });
   assert.equal(ok.verdict, 'clean');
 });
@@ -332,9 +332,9 @@ test('a review without the search server gives no verdict', async () => {
 });
 
 test('an answer from another model gives no verdict', async () => {
-  const r = await verdict([gateInit(), answer('claude-opus-5-5'), done('VERDICT: CLEAN', [GATE, 'claude-opus-5-5'])]);
+  const r = await verdict([gateInit(), answer('claude-mythos-5-1'), done('VERDICT: CLEAN', [GATE, 'claude-mythos-5-1'])]);
   assert.equal(r.verdict, 'unavailable');
-  assert.match(r.reason, /claude-opus-5-5, not claude-mythos-5-1/);
+  assert.match(r.reason, /claude-mythos-5-1, not claude-opus-5-5/);
 });
 
 test('a missing token is named as the reason', async () => {
