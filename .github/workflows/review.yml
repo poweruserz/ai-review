@@ -82,6 +82,14 @@ jobs:
       CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1'
       CLAUDE_CODE_DISABLE_ADVISOR_TOOL: '1' # the verdict must come from this model alone, as the local gate required
     steps:
+      # The search server below runs on node, which the dreamfyre review runners do not have on PATH. Before the
+      # checkout and with the package cache off, so nothing in the pull request's tree can steer it.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        if: env.HAS_TOKEN == 'true'
+        with:
+          node-version: 24
+          package-manager-cache: false
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ env.HEAD_SHA }}
@@ -94,12 +102,6 @@ jobs:
           # A symlink in the tree could point Read at /proc or the home directory past the path rules below; the
           # diff above already shows what each one pointed to.
           find . -path ./.git -prune -o -type l -print -exec rm -f {} + | sed 's/^/removed symlink: /'
-
-      # The search server below runs on node, which the dreamfyre review runners do not have on PATH.
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        if: env.HAS_TOKEN == 'true'
-        with:
-          node-version: 24
 
       # Grep and glob for the reviewer, as a read-only MCP server over git with no shell (native Claude Code builds
       # dropped the Grep and Glob tools).
