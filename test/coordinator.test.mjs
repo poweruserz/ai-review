@@ -1,4 +1,4 @@
-// Runs scripts straight out of review.yml: the coordinator's "Decide" against fake GitHub data, and the GLM
+// Runs scripts straight out of review.yml: the coordinator's "Decide" against fake GitHub data, and the Claude
 // session finder against fake execution files.
 // Usage: node --test
 import { test } from 'node:test';
@@ -22,6 +22,7 @@ function stepScript(id, ...params) {
 }
 const decide = stepScript('decide', 'github', 'context', 'core');
 const findSession = stepScript('session', 'require', 'core');
+const extractVerdict = stepScript('result', 'require', 'core');
 
 const HEAD = 'a'.repeat(40);
 const OLD = 'b'.repeat(40);
@@ -31,10 +32,10 @@ const codexState = (state, updated_at = '2026-10-20T10:00:00Z') => ({
   body: `<!-- codex-pull-request-review-summary -->\n<!-- codex-review-state:v1 ${JSON.stringify(state)} -->\n## Codex Review Summary`,
 });
 const review = (sha, findings, status = 'completed') => ({ commit_sha: sha, status, has_any_findings: findings, has_unresolved_findings: findings });
-const glmComment = (sha, verdict, text = 'VERDICT: FINDINGS\n1. [P1] a.js:1 — bug', updated_at = '2026-10-20T10:00:00Z') => ({
+const claudeComment = (sha, verdict, text = 'VERDICT: FINDINGS\n1. [P1] a.js:1 — bug', updated_at = '2026-10-20T10:00:00Z') => ({
   user: { login: 'github-actions[bot]' },
   updated_at,
-  body: `<!-- ai-review:glm sha=${sha} verdict=${verdict} -->\n### GLM review\nCommit \`${sha.slice(0, 7)}\`\n\n${text}`,
+  body: `<!-- ai-review:claude sha=${sha} verdict=${verdict} -->\n### Claude review\nCommit \`${sha.slice(0, 7)}\`\n\n${text}`,
 });
 const ruling = (sha = HEAD, login = 'o', created_at = '2026-10-20T11:00:00Z') => ({ user: { login }, created_at, body: `<!-- ai-review:ruled sha=${sha} -->\nRejected: …` });
 const ask = (sha, round, login = 'o', created_at = '2026-10-19T06:39:51Z') => ({ user: { login }, created_at, body: `@codex ...\n<!-- aifix sha=${sha} round=${round} -->` });
@@ -68,58 +69,63 @@ async function run(comments, { hasPat = 'true', maxRounds = '3', asker = 'o', th
 }
 
 test('both clean on the head → success', async () => {
-  const r = await run([codexState({ code_review: review(HEAD, false), security_review: review(HEAD, false) }), glmComment(HEAD, 'clean', 'VERDICT: CLEAN')]);
-  assert.deepEqual(r.statuses, ['success: Codex and GLM found nothing']);
+  const r = await run([codexState({ code_review: review(HEAD, false), security_review: review(HEAD, false) }), claudeComment(HEAD, 'clean', 'VERDICT: CLEAN')]);
+  assert.deepEqual(r.statuses, ['success: Codex and Claude found nothing']);
   assert.equal(r.outputs.ask, undefined);
 });
 
-test('Dependabot pull request → no status, since GLM never reviews it', async () => {
+test('Claude gave no verdict → error, never a pass', async () => {
+  const r = await run([codexState({ code_review: review(HEAD, false), security_review: review(HEAD, false) }), claudeComment(HEAD, 'unavailable', '_no verdict_')]);
+  assert.deepEqual(r.statuses, ['error: Claude gave no verdict: see its comment, then re-run the workflow']);
+});
+
+test('Dependabot pull request → no status, since Claude never reviews it', async () => {
   const r = await run([codexState({ code_review: review(HEAD, false), security_review: review(HEAD, false) })], { author: 'dependabot[bot]' });
   assert.deepEqual(r.statuses, []);
 });
 
 test('pull request into another branch → error, so retargeting it cannot carry a success over', async () => {
-  const r = await run([codexState({ code_review: review(HEAD, false), security_review: review(HEAD, false) }), glmComment(HEAD, 'clean', 'VERDICT: CLEAN')], { base: 'feature' });
+  const r = await run([codexState({ code_review: review(HEAD, false), security_review: review(HEAD, false) }), claudeComment(HEAD, 'clean', 'VERDICT: CLEAN')], { base: 'feature' });
   assert.deepEqual(r.statuses, ['error: into feature, not main: not reviewed; after retargeting, push a new commit']);
 });
 
 test('Codex still on an older commit → waiting, naming the commit it last reviewed', async () => {
-  const r = await run([codexState({ code_review: review(OLD, false), security_review: review(OLD, false) }), glmComment(HEAD, 'clean', 'VERDICT: CLEAN')]);
+  const r = await run([codexState({ code_review: review(OLD, false), security_review: review(OLD, false) }), claudeComment(HEAD, 'clean', 'VERDICT: CLEAN')]);
   assert.deepEqual(r.statuses, ['pending: waiting for Codex; Codex last reviewed bbbbbbb']);
 });
 
-test('GLM not in yet → pending', async () => {
+test('Claude not in yet → pending', async () => {
   const r = await run([codexState({ code_review: review(HEAD, false), security_review: review(HEAD, false) })]);
-  assert.deepEqual(r.statuses, ['pending: waiting for GLM']);
+  assert.deepEqual(r.statuses, ['pending: waiting for Claude']);
 });
 
-test('GLM verdict for an older head does not count', async () => {
-  const r = await run([codexState({ code_review: review(HEAD, false), security_review: review(HEAD, false) }), glmComment(OLD, 'clean')]);
-  assert.deepEqual(r.statuses, ['pending: waiting for GLM']);
+test('Claude verdict for an older head does not count', async () => {
+  const r = await run([codexState({ code_review: review(HEAD, false), security_review: review(HEAD, false) }), claudeComment(OLD, 'clean')]);
+  assert.deepEqual(r.statuses, ['pending: waiting for Claude']);
 });
 
 test('security review still on an older head → waiting for Codex', async () => {
-  const r = await run([codexState({ code_review: review(HEAD, false), security_review: review(OLD, false) }), glmComment(HEAD, 'clean')]);
+  const r = await run([codexState({ code_review: review(HEAD, false), security_review: review(OLD, false) }), claudeComment(HEAD, 'clean')]);
   assert.deepEqual(r.statuses, ['pending: waiting for Codex']);
 });
 
 test('code review findings → failure without waiting for a security review still running, which it names', async () => {
-  const r = await run([codexState({ code_review: review(HEAD, true), security_review: review(HEAD, null, 'running') }), glmComment(HEAD, 'clean')], { codexFixes: 'false' });
+  const r = await run([codexState({ code_review: review(HEAD, true), security_review: review(HEAD, null, 'running') }), claudeComment(HEAD, 'clean')], { codexFixes: 'false' });
   assert.deepEqual(r.statuses, ['failure: findings to rule on from Codex; Codex security review still running']);
 });
 
 test('a clean code review still waits for the security review', async () => {
-  const r = await run([codexState({ code_review: review(HEAD, false), security_review: review(HEAD, null, 'running') }), glmComment(HEAD, 'clean')]);
+  const r = await run([codexState({ code_review: review(HEAD, false), security_review: review(HEAD, null, 'running') }), claudeComment(HEAD, 'clean')]);
   assert.deepEqual(r.statuses, ['pending: waiting for Codex']);
 });
 
 test('no security review configured → code review alone decides', async () => {
-  const r = await run([codexState({ code_review: review(HEAD, false) }), glmComment(HEAD, 'clean')]);
-  assert.deepEqual(r.statuses, ['success: Codex and GLM found nothing']);
+  const r = await run([codexState({ code_review: review(HEAD, false) }), claudeComment(HEAD, 'clean')]);
+  assert.deepEqual(r.statuses, ['success: Codex and Claude found nothing']);
 });
 
-test('findings → asks Codex once, as round 1, with the GLM text', async () => {
-  const r = await run([codexState({ code_review: review(HEAD, true), security_review: review(HEAD, false) }), glmComment(HEAD, 'findings')]);
+test('findings → asks Codex once, as round 1, with the Claude text', async () => {
+  const r = await run([codexState({ code_review: review(HEAD, true), security_review: review(HEAD, false) }), claudeComment(HEAD, 'findings')]);
   assert.equal(r.outputs.ask, 'true');
   assert.match(r.outputs.body, /^@codex Fix /);
   assert.match(r.outputs.body, /\[P1\] a\.js:1/);
@@ -128,113 +134,113 @@ test('findings → asks Codex once, as round 1, with the GLM text', async () => 
 });
 
 test('a stale "unresolved" flag is ignored once every Codex thread is resolved', async () => {
-  const r = await run([codexState({ code_review: review(HEAD, true), security_review: review(HEAD, false) }), glmComment(HEAD, 'clean')],
+  const r = await run([codexState({ code_review: review(HEAD, true), security_review: review(HEAD, false) }), claudeComment(HEAD, 'clean')],
     { threads: [thread(true), thread(true)], codexFixes: 'false' });
-  assert.deepEqual(r.statuses, ['success: Codex and GLM found nothing']);
+  assert.deepEqual(r.statuses, ['success: Codex and Claude found nothing']);
 });
 
 test('an open Codex thread counts even when the flag is null', async () => {
   const unknown = { ...review(HEAD, false), has_any_findings: null, has_unresolved_findings: null };
-  const r = await run([codexState({ code_review: unknown, security_review: review(HEAD, false) }), glmComment(HEAD, 'clean')],
+  const r = await run([codexState({ code_review: unknown, security_review: review(HEAD, false) }), claudeComment(HEAD, 'clean')],
     { threads: [thread(true), thread(false)], codexFixes: 'false' });
   assert.deepEqual(r.statuses, ['failure: findings to rule on from Codex']);
 });
 
 test("other reviewers' open threads are not Codex findings", async () => {
-  const r = await run([codexState({ code_review: review(HEAD, false) }), glmComment(HEAD, 'clean')],
+  const r = await run([codexState({ code_review: review(HEAD, false) }), claudeComment(HEAD, 'clean')],
     { threads: [thread(false, 'poweruserz')], codexFixes: 'false' });
-  assert.deepEqual(r.statuses, ['success: Codex and GLM found nothing']);
+  assert.deepEqual(r.statuses, ['success: Codex and Claude found nothing']);
 });
 
 test('already asked about this head → does nothing', async () => {
-  const r = await run([codexState({ code_review: review(HEAD, true) }), glmComment(HEAD, 'findings'), ask(HEAD, 1)]);
+  const r = await run([codexState({ code_review: review(HEAD, true) }), claudeComment(HEAD, 'findings'), ask(HEAD, 1)]);
   assert.deepEqual(r.statuses, []);
   assert.equal(r.outputs.ask, undefined);
 });
 
 test('Claude fixes by default: findings → failure naming the sources, and Codex is not asked', async () => {
-  const r = await run([codexState({ code_review: review(HEAD, true), security_review: review(HEAD, false) }), glmComment(HEAD, 'findings')], { codexFixes: 'false' });
-  assert.deepEqual(r.statuses, ['failure: findings to rule on from Codex and GLM']);
+  const r = await run([codexState({ code_review: review(HEAD, true), security_review: review(HEAD, false) }), claudeComment(HEAD, 'findings')], { codexFixes: 'false' });
+  assert.deepEqual(r.statuses, ['failure: findings to rule on from Codex and Claude']);
   assert.equal(r.outputs.ask, undefined);
 });
 
-test('Claude fixes by default: GLM-only findings name GLM alone', async () => {
-  const r = await run([codexState({ code_review: review(HEAD, false) }), glmComment(HEAD, 'findings')], { codexFixes: 'false' });
-  assert.deepEqual(r.statuses, ['failure: findings to rule on from GLM']);
+test('Claude fixes by default: Claude-only findings name Claude alone', async () => {
+  const r = await run([codexState({ code_review: review(HEAD, false) }), claudeComment(HEAD, 'findings')], { codexFixes: 'false' });
+  assert.deepEqual(r.statuses, ['failure: findings to rule on from Claude']);
 });
 
 // Every Codex thread is resolved in these, so only the ruling decides.
-const ruled = (extra, opts = {}) => run([codexState({ code_review: review(HEAD, true), security_review: review(HEAD, false) }), glmComment(HEAD, 'findings'), ...extra],
+const ruled = (extra, opts = {}) => run([codexState({ code_review: review(HEAD, true), security_review: review(HEAD, false) }), claudeComment(HEAD, 'findings'), ...extra],
   { threads: [thread(true)], codexFixes: 'false', ...opts });
 
 test('the owner ruled on every finding after both results → success', async () => {
   const r = await ruled([ruling()]);
-  assert.deepEqual(r.statuses, ['success: the owner ruled on the findings from GLM']);
+  assert.deepEqual(r.statuses, ['success: the owner ruled on the findings from Claude']);
 });
 
 test('a ruling also covers a stale security flag', async () => {
-  const r = await run([codexState({ code_review: review(HEAD, false), security_review: review(HEAD, true) }), glmComment(HEAD, 'clean'), ruling()],
+  const r = await run([codexState({ code_review: review(HEAD, false), security_review: review(HEAD, true) }), claudeComment(HEAD, 'clean'), ruling()],
     { threads: [], codexFixes: 'false' });
   assert.deepEqual(r.statuses, ['success: the owner ruled on the findings from Codex']);
 });
 
 test('a ruling older than a result it would cover does not count', async () => {
-  const r = await run([codexState({ code_review: review(HEAD, true), security_review: review(HEAD, false) }, '2026-10-20T12:00:00Z'), glmComment(HEAD, 'findings'), ruling()],
+  const r = await run([codexState({ code_review: review(HEAD, true), security_review: review(HEAD, false) }, '2026-10-20T12:00:00Z'), claudeComment(HEAD, 'findings'), ruling()],
     { threads: [thread(true)], codexFixes: 'false' });
-  assert.deepEqual(r.statuses, ['failure: findings to rule on from GLM']);
+  assert.deepEqual(r.statuses, ['failure: findings to rule on from Claude']);
 });
 
 test('a ruling for another head does not count', async () => {
   const r = await ruled([ruling(OLD)]);
-  assert.deepEqual(r.statuses, ['failure: findings to rule on from GLM']);
+  assert.deepEqual(r.statuses, ['failure: findings to rule on from Claude']);
 });
 
 test('a ruling from anyone but the owner does not count', async () => {
   const r = await ruled([ruling(HEAD, 'stranger')]);
-  assert.deepEqual(r.statuses, ['failure: findings to rule on from GLM']);
+  assert.deepEqual(r.statuses, ['failure: findings to rule on from Claude']);
 });
 
 test('an open Codex thread still blocks a ruling', async () => {
   const r = await ruled([ruling()], { threads: [thread(true), thread(false)] });
-  assert.deepEqual(r.statuses, ['failure: findings to rule on from Codex and GLM']);
+  assert.deepEqual(r.statuses, ['failure: findings to rule on from Codex and Claude']);
 });
 
 test('a ruling does not cover a security review still running', async () => {
-  const r = await run([codexState({ code_review: review(HEAD, true), security_review: review(HEAD, false, 'running') }), glmComment(HEAD, 'findings'), ruling()],
+  const r = await run([codexState({ code_review: review(HEAD, true), security_review: review(HEAD, false, 'running') }), claudeComment(HEAD, 'findings'), ruling()],
     { threads: [thread(true)], codexFixes: 'false' });
   assert.deepEqual(r.statuses, ['pending: waiting for Codex']);
 });
 
 test('Codex answers the fix request with an error → error that says why', async () => {
   const reply = codexReply('To use Codex here, [create an environment for this repo](https://chatgpt.com/codex/cloud/settings/environments).');
-  const r = await run([codexState({ code_review: review(HEAD, true) }), glmComment(HEAD, 'findings'), ask(HEAD, 1), reply]);
+  const r = await run([codexState({ code_review: review(HEAD, true) }), claudeComment(HEAD, 'findings'), ask(HEAD, 1), reply]);
   assert.deepEqual(r.statuses, ['error: Codex could not run the fix task: To use Codex here, create an environment for this repo.']);
 });
 
 test('a Codex error from before the request does not end the round', async () => {
   const early = codexReply('Codex Review: Something went wrong.', '2026-10-19T06:00:00Z');
-  const r = await run([codexState({ code_review: review(HEAD, true) }), glmComment(HEAD, 'findings'), early, ask(HEAD, 1)]);
+  const r = await run([codexState({ code_review: review(HEAD, true) }), claudeComment(HEAD, 'findings'), early, ask(HEAD, 1)]);
   assert.deepEqual(r.statuses, []);
 });
 
 test('findings after three Codex rounds → error', async () => {
-  const r = await run([codexState({ code_review: review(HEAD, true) }), glmComment(HEAD, 'clean'), ask(OLD, 1), ask(OLD, 2), ask(OLD, 3)]);
+  const r = await run([codexState({ code_review: review(HEAD, true) }), claudeComment(HEAD, 'clean'), ask(OLD, 1), ask(OLD, 2), ask(OLD, 3)]);
   assert.deepEqual(r.statuses, ['error: findings remain after 3 Codex rounds']);
 });
 
 test('markers from anyone but the owner are ignored', async () => {
-  const r = await run([codexState({ code_review: review(HEAD, true) }), glmComment(HEAD, 'clean'), ask(HEAD, 1, 'stranger'), ask(OLD, 2, 'stranger'), ask(OLD, 3, 'stranger')]);
+  const r = await run([codexState({ code_review: review(HEAD, true) }), claudeComment(HEAD, 'clean'), ask(HEAD, 1, 'stranger'), ask(OLD, 2, 'stranger'), ask(OLD, 3, 'stranger')]);
   assert.equal(r.outputs.ask, 'true');
   assert.match(r.outputs.body, /round=1 -->$/);
 });
 
 test("rounds follow the token's account even when it is not the repository owner", async () => {
-  const r = await run([codexState({ code_review: review(HEAD, true) }), glmComment(HEAD, 'clean'), ask(OLD, 1, 'bot-user'), ask(OLD, 2, 'bot-user'), ask(OLD, 3, 'bot-user')], { asker: 'bot-user' });
+  const r = await run([codexState({ code_review: review(HEAD, true) }), claudeComment(HEAD, 'clean'), ask(OLD, 1, 'bot-user'), ask(OLD, 2, 'bot-user'), ask(OLD, 3, 'bot-user')], { asker: 'bot-user' });
   assert.deepEqual(r.statuses, ['error: findings remain after 3 Codex rounds']);
 });
 
 test('missing token → error instead of a silent stall', async () => {
-  const r = await run([codexState({ code_review: review(HEAD, false) }), glmComment(HEAD, 'findings')], { hasPat: 'false' });
+  const r = await run([codexState({ code_review: review(HEAD, false) }), claudeComment(HEAD, 'findings')], { hasPat: 'false' });
   assert.deepEqual(r.statuses, ['error: CODEX_TRIGGER_PAT secret is missing']);
 });
 
@@ -249,11 +255,11 @@ async function session(messages) {
 const ID = '321f3910-abc0-49cb-a020-a5f56662abe6';
 const init = (session_id = ID) => ({ type: 'system', subtype: 'init', session_id });
 
-test('GLM out of turns → its session is resumed for a verdict', async () => {
+test('Claude out of turns → its session is resumed for a verdict', async () => {
   assert.equal((await session([init(), { type: 'result', subtype: 'error_max_turns', is_error: true }])).id, ID);
 });
 
-test('GLM failed for another reason → nothing to resume', async () => {
+test('Claude failed for another reason → nothing to resume', async () => {
   assert.equal((await session([init(), { type: 'result', subtype: 'error_during_execution', is_error: true }])).id, undefined);
 });
 
@@ -265,4 +271,40 @@ test('no execution file → a warning, nothing to resume', async () => {
   const r = await session(undefined);
   assert.equal(r.id, undefined);
   assert.equal(r.warnings.length, 1);
+});
+
+// The verdict extractor: a verdict counts only when every answer came from the gate's model.
+const GATE = 'claude-mythos-5-1';
+const answer = (model = GATE) => ({ type: 'assistant', message: { model, content: [{ type: 'text', text: '…' }] } });
+const done = (text, models = [GATE]) => ({ type: 'result', subtype: 'success', is_error: false, result: text, modelUsage: Object.fromEntries(models.map(m => [m, {}])) });
+async function verdict(messages, { token = 'true' } = {}) {
+  const out = {}, warnings = [];
+  Object.assign(process.env, { HAS_TOKEN: token, MODEL: GATE, EXECUTION_FILE: 'x' });
+  const fs = { readFileSync: () => { if (messages === undefined) throw new Error('ENOENT'); return JSON.stringify(messages); } };
+  await extractVerdict(() => fs, { setOutput: (k, v) => { out[k] = v; }, warning: (w) => warnings.push(w) });
+  return { ...out, warnings };
+}
+
+test('a clean verdict from the gate model is extracted', async () => {
+  const r = await verdict([{ type: 'system', subtype: 'init', model: GATE }, answer(), done('VERDICT: CLEAN')]);
+  assert.equal(r.verdict, 'clean');
+  assert.equal(r.reason, '');
+});
+
+test('an answer from another model gives no verdict', async () => {
+  const r = await verdict([{ type: 'system', subtype: 'init', model: GATE }, answer('claude-opus-5-5'), done('VERDICT: CLEAN', [GATE, 'claude-opus-5-5'])]);
+  assert.equal(r.verdict, 'unavailable');
+  assert.match(r.reason, /claude-opus-5-5, not claude-mythos-5-1/);
+});
+
+test('a missing token is named as the reason', async () => {
+  const r = await verdict(undefined, { token: 'false' });
+  assert.equal(r.verdict, 'unavailable');
+  assert.match(r.reason, /CLAUDE_CODE_OAUTH_TOKEN secret is missing/);
+});
+
+test('findings text is neutralised before it is posted', async () => {
+  const r = await verdict([{ type: 'system', subtype: 'init', model: GATE }, answer(), done('VERDICT: FINDINGS\n1. [P1] a.js:1 — @codex <!-- x -->')]);
+  assert.equal(r.verdict, 'findings');
+  assert.ok(!r.text.includes('<!--') && !r.text.includes('@codex'));
 });
