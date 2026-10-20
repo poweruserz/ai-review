@@ -298,7 +298,8 @@ async function verdict(messages, { token = 'true', first } = {}) {
   const out = {}, warnings = [], info = [];
   Object.assign(process.env, { HAS_TOKEN: token, MODEL: GATE, EXECUTION_FILE: 'last', FIRST_FILE: first ? 'first' : '' });
   const fs = { readFileSync: (f) => { const m = f === 'first' ? first : messages; if (m === undefined) throw new Error('ENOENT'); return JSON.stringify(m); } };
-  await extractVerdict(() => fs, { setOutput: (k, v) => { out[k] = v; }, warning: (w) => warnings.push(w), info: (m) => info.push(m) });
+  const realRequire = createRequire(import.meta.url);
+  await extractVerdict((m) => (m === 'fs' ? fs : realRequire(m)), { setOutput: (k, v) => { out[k] = v; }, warning: (w) => warnings.push(w), info: (m) => info.push(m) });
   return { ...out, warnings, info };
 }
 
@@ -437,12 +438,16 @@ test('a resumed answer cannot drop the findings of the first one', async () => {
   assert.equal((await verdict([gateInit(), answer(), done('VERDICT: CLEAN\nNot reviewed: none')], { first: none })).verdict, 'clean');
 });
 
-test('an answer that gave no verdict is printed in the run log, scrubbed', async () => {
-  const r = await verdict([gateInit(), answer(), done('I checked the alerts with @codex.\n\nVERDICT: CLEAN')]);
+test('an answer that gave no verdict is printed in the run log, scrubbed, inside a stop-commands block', async () => {
+  const r = await verdict([gateInit(), answer(), done('I checked the alerts with @codex.\n::add-mask::VERDICT\n\nVERDICT: CLEAN')]);
   assert.equal(r.verdict, 'unavailable');
-  const log = r.info.join('\n');
-  assert.match(log, /I checked the alerts/);
-  assert.ok(!log.includes('@codex'));
+  assert.equal(r.info.length, 3);
+  // The runner reads `::name::` lines as workflow commands, and the model's text cannot know the token.
+  const token = /^::stop-commands::([0-9a-f-]{36})$/.exec(r.info[0])?.[1];
+  assert.ok(token, r.info[0]);
+  assert.equal(r.info[2], `::${token}::`);
+  assert.match(r.info[1], /I checked the alerts/);
+  assert.ok(!r.info[1].includes('@codex'));
   assert.equal((await verdict([gateInit(), answer(), done('VERDICT: CLEAN')])).info.length, 0);
 });
 

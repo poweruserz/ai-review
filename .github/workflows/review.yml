@@ -415,9 +415,17 @@ jobs:
               return out;
             };
             // The action hides the model's output, and the comment sends the reader here, so an answer that gave
-            // no verdict is printed, scrubbed like the posted text.
-            if (reason && first) core.info(`Claude's first answer:\n${scrub(first)}`);
-            if (reason && answer) core.info(`Claude's answer:\n${scrub(answer)}`);
+            // no verdict is printed, scrubbed like the posted text. The runner reads `::name::` lines on stdout as
+            // workflow commands (add-mask, stop-commands), so the text goes inside a stop-commands block whose
+            // token the text cannot know.
+            const print = (label, s) => {
+              const stop = require('crypto').randomUUID();
+              core.info(`::stop-commands::${stop}`);
+              core.info(`${label}\n${scrub(s)}`);
+              core.info(`::${stop}::`);
+            };
+            if (reason && first) print("Claude's first answer:", first);
+            if (reason && answer) print("Claude's answer:", answer);
             core.setOutput('verdict', verdict);
             core.setOutput('reason', scrub(reason));
             core.setOutput('text', scrub(text));
