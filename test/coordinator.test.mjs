@@ -10,7 +10,7 @@ import { createRequire } from 'node:module';
 
 const workflow = readFileSync(new URL('../.github/workflows/review.yml', import.meta.url), 'utf8').split('\n');
 function stepScript(id, ...params) {
-  const start = workflow.findIndex((line, i) => /^\s*script: \|$/.test(line) && workflow.slice(i - 8, i).some(l => l.includes(`id: ${id}`)));
+  const start = workflow.findIndex((line, i) => /^\s*script: \|$/.test(line) && workflow.slice(Math.max(0, i - 12), i).some(l => l.includes(`id: ${id}`)));
   assert.ok(start > 0, `step ${id} not found`);
   const indent = workflow[start].search(/\S/) + 2;
   const body = [];
@@ -318,6 +318,29 @@ test('findings text is neutralised before it is posted', async () => {
   const r = await verdict([{ type: 'system', subtype: 'init', model: GATE }, answer(), done('VERDICT: FINDINGS\n1. [P1] a.js:1 — @codex <!-- x -->')]);
   assert.equal(r.verdict, 'findings');
   assert.ok(!r.text.includes('<!--') && !r.text.includes('@codex'));
+});
+
+test('the embedded search server is the one under scripts/', () => {
+  const start = workflow.findIndex(l => l.endsWith("<<'SEARCH_MCP'")) + 1;
+  const end = workflow.indexOf('          SEARCH_MCP', start);
+  assert.ok(start > 0 && end > start, 'heredoc not found');
+  const embedded = workflow.slice(start, end).map(l => l.replace(/^ {10}/, '')).join('\n');
+  assert.equal(embedded, readFileSync(new URL('../scripts/search-mcp.mjs', import.meta.url), 'utf8').replace(/\s+$/, ''));
+});
+
+test('a failed search-tool setup is named as the reason', async () => {
+  process.env.SEARCH_OUTCOME = 'failure';
+  const r = await verdict(undefined);
+  delete process.env.SEARCH_OUTCOME;
+  assert.equal(r.verdict, 'unavailable');
+  assert.match(r.reason, /search tools could not be set up/);
+});
+
+test('private keys and other credential shapes are scrubbed', async () => {
+  const r = await verdict([{ type: 'system', subtype: 'init', model: GATE }, answer(),
+    done('VERDICT: FINDINGS\n1. [P0] k.pem:1 — -----BEGIN RSA PRIVATE KEY-----\nMIIE...\n-----END RSA PRIVATE KEY----- AKIAABCDEFGHIJKLMNOP github_pat_abcdefghijklmnopqrstuvwxyz xoxb-1234567890-abc')]);
+  assert.equal(r.text.match(/\[redacted\]/g).length, 4, r.text);
+  assert.ok(!/BEGIN|AKIA|github_pat|xoxb/.test(r.text));
 });
 
 test('the token, and anything shaped like one, never reaches the comment', async () => {

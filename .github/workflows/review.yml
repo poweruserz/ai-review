@@ -89,18 +89,98 @@ jobs:
           persist-credentials: false
 
       - name: Write the pull request diff
-        run: git diff --merge-base "$BASE_SHA" "$HEAD_SHA" > .ai-review.diff
+        run: |
+          git diff --merge-base "$BASE_SHA" "$HEAD_SHA" > .ai-review.diff
+          # A symlink in the tree could point Read at /proc or the home directory past the path rules below; the
+          # diff above already shows what each one pointed to.
+          find . -path ./.git -prune -o -type l -print -exec rm -f {} + | sed 's/^/removed symlink: /'
 
       # Grep and glob for the reviewer, as a read-only MCP server over git with no shell (native Claude Code builds
-      # dropped the Grep and Glob tools). Fetched from this workflow's own commit, so the two always match.
+      # dropped the Grep and Glob tools).
       - name: Set up the search tools
         id: search
         if: env.HAS_TOKEN == 'true'
-        env:
-          WORKFLOW_SHA: ${{ github.job_workflow_sha }}
         run: |
           set -euo pipefail
-          curl -fsSL "https://raw.githubusercontent.com/poweruserz/ai-review/$WORKFLOW_SHA/scripts/search-mcp.mjs" -o "$RUNNER_TEMP/search-mcp.mjs"
+          # scripts/search-mcp.mjs, embedded so the job needs no second checkout (github.job_workflow_sha is empty
+          # here, so the file cannot be fetched by this workflow's own commit); a test keeps the two copies equal.
+          cat > "$RUNNER_TEMP/search-mcp.mjs" <<'SEARCH_MCP'
+          #!/usr/bin/env node
+          // Read-only search for the reviewer: grep and glob over the checked-out repository, through git with no shell,
+          // since native Claude Code builds dropped the Grep and Glob tools and Bash must stay off while the job holds the
+          // owner's token. Speaks MCP over stdio (one JSON-RPC message per line). Run it from the repository root.
+          import { execFile } from 'node:child_process';
+          import { createInterface } from 'node:readline';
+
+          const git = (args) => new Promise((resolve) => execFile('git', args, { cwd: process.cwd(), encoding: 'utf8', maxBuffer: 16 << 20 },
+            (err, out) => resolve(err && !out ? '' : out))); // git grep exits 1 on no match and 128 on a bad path: both read as empty
+          const clip = (text, max) => {
+            const lines = text.split('\n').filter(Boolean).map(l => (l.length > 400 ? `${l.slice(0, 400)}…` : l));
+            if (lines.length > max) lines.splice(max, lines.length, `… ${lines.length - max} more lines not shown; narrow the search`);
+            return lines.join('\n') || 'no matches';
+          };
+          // A path must stay inside the repository and cannot be mistaken for an option.
+          const safePath = (p) => {
+            if (typeof p !== 'string' || /^[-/~]|^\.\.(\/|$)|\/\.\.(\/|$)/.test(p)) throw new Error('path must be relative to the repository root');
+            return p;
+          };
+          // Token by token, so a replacement never rewrites an earlier one: **/ spans directories, * and ? stay within one.
+          const globToRegExp = (g) => new RegExp(`^${g.replace(/\*\*\/|\*\*|\*|\?|[^*?]+/g, (t) =>
+            t === '**/' ? '(?:.*/)?' : t === '**' ? '.*' : t === '*' ? '[^/]*' : t === '?' ? '[^/]' : t.replace(/[.+^${}()|[\]\\]/g, '\\$&'))}$`);
+
+          const tools = {
+            grep: {
+              description: 'Search file contents in the repository with an extended regular expression (git grep). Returns path:line:text, at most 200 lines.',
+              inputSchema: {
+                type: 'object',
+                properties: {
+                  pattern: { type: 'string', description: 'Extended regular expression (POSIX ERE)' },
+                  path: { type: 'string', description: 'File or directory to search, relative to the repository root; the whole repository when omitted' },
+                  ignore_case: { type: 'boolean', description: 'Case-insensitive match' },
+                },
+                required: ['pattern'],
+              },
+              run: async ({ pattern, path = '.', ignore_case = false }) => {
+                if (typeof pattern !== 'string' || !pattern) throw new Error('pattern is required');
+                return clip(await git(['grep', '-n', '-I', '-E', '--no-color', ...(ignore_case ? ['-i'] : []), '-e', pattern, '--', safePath(path)]), 200);
+              },
+            },
+            glob: {
+              description: 'List tracked files whose path matches a glob, e.g. src/**/*.ts or **/routes.php. Returns at most 500 paths.',
+              inputSchema: { type: 'object', properties: { pattern: { type: 'string', description: 'Glob over paths relative to the repository root; ** spans directories' } }, required: ['pattern'] },
+              run: async ({ pattern }) => {
+                if (typeof pattern !== 'string' || !pattern) throw new Error('pattern is required');
+                const re = globToRegExp(pattern);
+                return clip((await git(['ls-files'])).split('\n').filter(f => f && re.test(f)).join('\n'), 500);
+              },
+            },
+          };
+
+          const reply = (id, result) => process.stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id, result })}\n`);
+          const fail = (id, code, message) => process.stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id, error: { code, message } })}\n`);
+          createInterface({ input: process.stdin }).on('line', async (line) => {
+            let msg;
+            try { msg = JSON.parse(line); } catch { return; }
+            const { id, method, params = {} } = msg;
+            if (id === undefined) return; // notifications need no answer
+            switch (method) {
+              case 'initialize':
+                return reply(id, { protocolVersion: params.protocolVersion ?? '2025-06-18', capabilities: { tools: {} }, serverInfo: { name: 'search', version: '1.0.0' } });
+              case 'ping':
+                return reply(id, {});
+              case 'tools/list':
+                return reply(id, { tools: Object.entries(tools).map(([name, t]) => ({ name, description: t.description, inputSchema: t.inputSchema })) });
+              case 'tools/call': {
+                const tool = tools[params.name];
+                if (!tool) return fail(id, -32602, `unknown tool ${params.name}`);
+                try { return reply(id, { content: [{ type: 'text', text: await tool.run(params.arguments ?? {}) }] }); }
+                catch (e) { return reply(id, { content: [{ type: 'text', text: e.message }], isError: true }); }
+              }
+              default:
+                return fail(id, -32601, `unknown method ${method}`);
+            }
+          });
+          SEARCH_MCP
           # The runner's own node (what actions/github-script runs on) when none is on PATH, as on the dreamfyre review runners.
           node="$(command -v node || ls "$RUNNER_TEMP"/../../externals/node2*/bin/node 2>/dev/null | tail -n 1)"
           "$node" --version >/dev/null
@@ -126,7 +206,9 @@ jobs:
           # Read plus the grep and glob above are all there is. Bash stays off: this job holds the owner's token,
           # and any command, even an allowlisted one, has flags that run programs.
           # The Read denies keep the model, which reads untrusted code, out of the process environment (/proc),
-          # the runner's credentials and the host; the workspace lives under the home directory, so that stays open.
+          # the home directory's dotfiles and dotdirs (.netrc, .ssh, .claude, .bun), the runner's credentials and
+          # the host. Only denies can do this: Read never asks permission, so an allowlist would not bind it. The
+          # workspace lives under the home directory (work/ or runners/, never a dotdir), so that stays open.
           # --restricted and --strict-mcp-config keep a pull request's .claude/settings.json hooks and .mcp.json
           # servers from running on the shared runner (the action sets enableAllProjectMcpServers).
           # Max effort, as the local gate had: on 8 real bugs, low effort ran 10x faster but found none of what max found.
@@ -136,7 +218,7 @@ jobs:
             --restricted
             --tools Read
             --allowedTools Read,mcp__search__grep,mcp__search__glob
-            --disallowedTools "Read(//proc/**),Read(//sys/**),Read(//dev/**),Read(//etc/**),Read(//run/**),Read(//var/**),Read(//tmp/**),Read(~/.claude/**),Read(**/.credentials*),Read(**/.runner)"
+            --disallowedTools "Read(//proc/**),Read(//sys/**),Read(//dev/**),Read(//etc/**),Read(//run/**),Read(//var/**),Read(//tmp/**),Read(//root/**),Read(~/.*),Read(~/.*/**),Read(**/.credentials*),Read(**/.runner),Read(**/.env),Read(**/.env.*)"
             --mcp-config ${{ steps.search.outputs.config }}
             --strict-mcp-config
             --max-turns ${{ inputs.glm-max-turns || inputs.max-turns }}
@@ -233,11 +315,13 @@ jobs:
           EXECUTION_FILE: ${{ steps.wrapup.outputs.execution_file || steps.claude.outputs.execution_file }}
           FIRST_FILE: ${{ steps.wrapup.outputs.execution_file && format('{0}/claude-execution-first.json', runner.temp) || '' }}
           TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }} # only compared against the output, which goes to a public comment
+          SEARCH_OUTCOME: ${{ steps.search.outcome }}
         with:
           script: |
             const fs = require('fs');
             let text = '', verdict = 'unavailable', reason = '';
             if (process.env.HAS_TOKEN !== 'true') reason = 'the CLAUDE_CODE_OAUTH_TOKEN secret is missing: update the caller';
+            else if (process.env.SEARCH_OUTCOME === 'failure') reason = 'the search tools could not be set up: see the workflow run';
             else try {
               const read = (f) => JSON.parse(fs.readFileSync(f, 'utf8'));
               const messages = read(process.env.EXECUTION_FILE);
@@ -266,7 +350,8 @@ jobs:
             const zwsp = String.fromCharCode(0x200b);
             const scrub = (s) => {
               let out = s.replace(/<!--/g, '&lt;!--').replace(/@(?=[\w-])/g, '@' + zwsp)
-                .replace(/sk-ant-[\w-]{16,}/g, '[redacted]').replace(/\bgh[pousr]_[A-Za-z0-9]{20,}\b/g, '[redacted]');
+                .replace(/-----BEGIN[^-]*-----[\s\S]*?-----END[^-]*-----/g, '[redacted]')
+                .replace(/sk-ant-[\w-]{16,}|\bgh[pousr]_[A-Za-z0-9]{20,}\b|\bgithub_pat_[\w]{22,}\b|\bAKIA[0-9A-Z]{16}\b|\bxox[abprs]-[\w-]{10,}\b/g, '[redacted]');
               const token = process.env.TOKEN;
               if (token && token.length >= 16) out = out.split(token).join('[redacted]');
               return out;
