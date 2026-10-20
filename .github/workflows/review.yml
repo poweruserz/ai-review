@@ -383,18 +383,23 @@ jobs:
               else if (search?.status !== 'connected') reason = `the search tools did not start (${search?.status ?? 'absent'}): see the workflow run`;
               else if (!result || result.is_error) reason = `no verdict: ${result?.subtype ?? 'no result'}`;
               else if (!shaped) reason = 'the answer did not follow the verdict format: see the workflow run';
-              // A resumed answer may add the shape, never drop findings: fewer finding lines than the first answer
-              // had, or CLEAN after it said FINDINGS, is no verdict.
-              else if (rest.length < first.split('\n').filter(l => /\[P[01]\]/.test(l)).length || (head[1] === 'CLEAN' && /(^|\n)VERDICT: FINDINGS/.test(first))) reason = 'the resumed answer dropped findings of the first one: see the workflow run';
+              // A first answer that said FINDINGS without one finding line left nothing to carry over below, so a
+              // resumed CLEAN could launder it.
+              else if (head[1] === 'CLEAN' && /(^|\n)VERDICT: FINDINGS/.test(first) && !/\[P[01]\] \S/.test(first)) reason = 'the first answer said FINDINGS without a finding line and the resumed one says CLEAN: see the workflow run';
               else {
                 verdict = head[1].toLowerCase();
                 text = lines.join('\n');
-                // A wrap-up names the files it never got to; a verdict that skipped files is not clean, so they
-                // become a finding for the session to review itself.
+                // A resumed answer may add the shape, never drop findings: each [P0]/[P1] line of the first answer
+                // whose file the resumed answer does not name is carried over as it was. A wrap-up also names the
+                // files it never got to; a verdict that skipped files is not clean, so they become a finding too,
+                // for the session to review itself.
+                const carried = first.split('\n').map(l => /\[P[01]\] \S.*/.exec(l)?.[0].trimEnd()).filter(Boolean)
+                  .filter(l => { const file = l.split(' ')[1].split(':')[0]; return !(/[./]/.test(file) && rest.some(r => r.includes(file))); });
                 const unread = lines.find(l => /^Not reviewed: /.test(l))?.slice('Not reviewed: '.length).trim();
-                if (unread && unread.toLowerCase() !== 'none') {
+                if (unread && unread.toLowerCase() !== 'none') carried.push(`[P1] ${unread} — not reviewed: the review ran out of turns before reading these — review them yourself before merging`);
+                if (carried.length) {
                   verdict = 'findings';
-                  text = ['VERDICT: FINDINGS', ...rest, `${rest.length + 1}. [P1] ${unread} — not reviewed: the review ran out of turns before reading these — review them yourself before merging`].join('\n');
+                  text = ['VERDICT: FINDINGS', ...rest, ...carried.map((l, i) => `${rest.length + i + 1}. ${l}`)].join('\n');
                 }
               }
             } catch (e) {

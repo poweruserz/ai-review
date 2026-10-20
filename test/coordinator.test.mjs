@@ -423,23 +423,29 @@ test('a FINDINGS answer with any other line gives no verdict', async () => {
   }
 });
 
-test('a resumed answer cannot drop the findings of the first one', async () => {
-  for (const named of ['VERDICT: FINDINGS\n1. [P1] a.js:1 — x — y → z — w\nAlso, note that…', 'I found this:\n- [P0] a.js:1 — x\n\nVERDICT: FINDINGS']) {
-    const first = [gateInit(), answer(), done(named)];
-    const clean = await verdict([gateInit(), answer(), done('VERDICT: CLEAN\nNot reviewed: none')], { first });
-    assert.equal(clean.verdict, 'unavailable', named);
-    assert.match(clean.reason, /dropped findings/);
-    assert.match(clean.info.join('\n'), /first answer:\n(VERDICT: FINDINGS|I found this:)/);
-    const kept = await verdict([gateInit(), answer(), done('VERDICT: FINDINGS\n1. [P1] a.js:1 — x — y → z — w\nNot reviewed: none')], { first });
-    assert.equal(kept.verdict, 'findings', named);
-  }
-  // Nor some of them: the resumed answer needs at least as many finding lines as the first one had.
-  const two = [gateInit(), answer(), done('Two problems:\n1. [P1] a.js:1 — x\n2. [P0] b.js:2 — y\n\nVERDICT: FINDINGS')];
-  const fewer = await verdict([gateInit(), answer(), done('VERDICT: FINDINGS\n1. [P1] a.js:1 — x — y → z — w\nNot reviewed: none')], { first: two });
-  assert.equal(fewer.verdict, 'unavailable');
-  assert.match(fewer.reason, /dropped findings/);
-  const both = await verdict([gateInit(), answer(), done('VERDICT: FINDINGS\n1. [P1] a.js:1 — x — y → z — w\n2. [P0] b.js:2 — y — z → w — v\nNot reviewed: none')], { first: two });
-  assert.equal(both.verdict, 'findings');
+test('a resumed answer cannot drop the findings of the first one: they are carried over', async () => {
+  const two = [gateInit(), answer(), done('Two problems:\n1. [P1] a.js:1 — x — y → z — w\n- [P0] src/b.js:2 — y — z → w — v\n\nVERDICT: FINDINGS')];
+  // CLEAN after findings → the findings, as they were.
+  const clean = await verdict([gateInit(), answer(), done('VERDICT: CLEAN\nNot reviewed: none')], { first: two });
+  assert.equal(clean.verdict, 'findings');
+  assert.equal(clean.text, 'VERDICT: FINDINGS\n1. [P1] a.js:1 — x — y → z — w\n2. [P0] src/b.js:2 — y — z → w — v');
+  // One kept (by file, however the path is written), one replaced → the replaced one is carried over.
+  const swapped = await verdict([gateInit(), answer(), done('VERDICT: FINDINGS\n1. [P1] lib/a.js:1 — x — y → z — w\n2. [P1] c.js:3 — q — r → s — t\nNot reviewed: none')], { first: two });
+  assert.equal(swapped.verdict, 'findings');
+  assert.equal(swapped.text, 'VERDICT: FINDINGS\n1. [P1] lib/a.js:1 — x — y → z — w\n2. [P1] c.js:3 — q — r → s — t\n3. [P0] src/b.js:2 — y — z → w — v');
+  // Both kept → nothing added; unread files still come after.
+  const both = await verdict([gateInit(), answer(), done('VERDICT: FINDINGS\n1. [P1] a.js:1 — x — y → z — w\n2. [P0] src/b.js:2 — y — z → w — v\nNot reviewed: d.js')], { first: two });
+  assert.equal(both.text, 'VERDICT: FINDINGS\n1. [P1] a.js:1 — x — y → z — w\n2. [P0] src/b.js:2 — y — z → w — v\n3. [P1] d.js — not reviewed: the review ran out of turns before reading these — review them yourself before merging');
+  // A severity in prose without a file is carried over too, rather than matched loosely.
+  const prose = [gateInit(), answer(), done('There is a [P1] bug in the alerts.\n\nVERDICT: FINDINGS')];
+  const loose = await verdict([gateInit(), answer(), done('VERDICT: FINDINGS\n1. [P1] debug.js:1 — x — y → z — w\nNot reviewed: none')], { first: prose });
+  assert.equal(loose.text, 'VERDICT: FINDINGS\n1. [P1] debug.js:1 — x — y → z — w\n2. [P1] bug in the alerts.');
+  // FINDINGS without one finding line leaves nothing to carry, so a resumed CLEAN gives no verdict.
+  const bare = [gateInit(), answer(), done('VERDICT: FINDINGS\n1. (P1) a.js:1 — x')];
+  const laundered = await verdict([gateInit(), answer(), done('VERDICT: CLEAN\nNot reviewed: none')], { first: bare });
+  assert.equal(laundered.verdict, 'unavailable');
+  assert.match(laundered.reason, /without a finding line/);
+  assert.match(laundered.info.join('\n'), /first answer:\nVERDICT: FINDINGS/);
   // Prose that only mentions the severities names no finding.
   const none = [gateInit(), answer(), done('I found no P0 or P1 problems. The shape is 1. [P0|P1] path:line.\n\nVERDICT: CLEAN')];
   assert.equal((await verdict([gateInit(), answer(), done('VERDICT: CLEAN\nNot reviewed: none')], { first: none })).verdict, 'clean');
