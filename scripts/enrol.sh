@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Enrols one repository in the AI review pipeline: its ZAI_API_KEY secret, a review-only dreamfyre runner for
-# a private repository (user gha-review, label dreamfyre-review), the ruleset that makes merging need ai-review
-# success, and a pull request that adds caller.yml as .github/workflows/ai-review.yml. Run it again once Codex has
-# reviewed that pull request: it re-runs the coordinator, which nothing else wakes before the caller merges.
+# a private repository (user gha-review, label dreamfyre-review), and a pull request that adds caller.yml as
+# .github/workflows/ai-review.yml. Run it again once Codex has reviewed that pull request: it adds the ruleset that
+# makes merging need ai-review success, then re-runs the coordinator, which nothing else wakes before the caller merges.
 # Run from the owner's machine (needs gh and `wsl -e ssh dreamfyre`). Every step is skipped when done,
 # so re-running is safe.
 # Usage: ZAI_KEY_FILE=<file> scripts/enrol.sh <repo>
@@ -33,23 +33,31 @@ if [ "$private" = true ]; then
   fi
 fi
 
-# Before the pull request, so that it too merges only on ai-review success.
-# A plain assignment, so that set -e stops the script when the lookup fails instead of skipping the ruleset.
-rulesets="$(gh api "repos/$OWNER/$REPO/rulesets" --jq '[.[] | select(.name == "ai-review required")] | length')"
-if [ "$rulesets" = 0 ]; then
-  gh api -X POST "repos/$OWNER/$REPO/rulesets" --input "$here/ruleset.json" >/dev/null
-  say "ruleset added: merging into $branch needs ai-review success"
-else
-  say "ruleset already there"
-fi
+ensure_ruleset() {
+  # A plain assignment, so that set -e stops the script when the lookup fails instead of skipping the ruleset.
+  rulesets="$(gh api "repos/$OWNER/$REPO/rulesets" --jq '[.[] | select(.name == "ai-review required")] | length')"
+  if [ "$rulesets" = 0 ]; then
+    gh api -X POST "repos/$OWNER/$REPO/rulesets" --input "$here/ruleset.json" >/dev/null
+    say "ruleset added: merging into $branch needs ai-review success"
+  else
+    say "ruleset already there"
+  fi
+}
 
 if gh api "repos/$OWNER/$REPO/contents/.github/workflows/ai-review.yml?ref=$branch" >/dev/null 2>&1; then
   say "caller already on $branch"
+  ensure_ruleset
   exit 0
 fi
 open_pr="$(gh pr list -R "$OWNER/$REPO" --head ci/ai-review --state open --json number --jq '.[0].number // ""')"
-# Until the caller merges, Codex finishing wakes nothing here.
-if [ -n "$open_pr" ]; then exec bash "$here/recheck.sh" "$REPO" "$open_pr"; fi
+if [ -n "$open_pr" ]; then
+  # Not before the pull request: the ruleset names GitHub Actions as the status source, which GitHub may refuse
+  # until Actions has run here, and the pull request's own run can be the first. It goes in before the merge, so
+  # that pull request too merges only on success, which the coordinator re-run gives it: until the caller merges,
+  # Codex finishing wakes nothing here.
+  ensure_ruleset
+  exec bash "$here/recheck.sh" "$REPO" "$open_pr"
+fi
 
 base_sha="$(gh api "repos/$OWNER/$REPO/git/ref/heads/$branch" --jq .object.sha)"
 gh api -X POST "repos/$OWNER/$REPO/git/refs" -f ref=refs/heads/ci/ai-review -f sha="$base_sha" >/dev/null 2>&1 \
