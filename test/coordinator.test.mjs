@@ -265,6 +265,20 @@ test('Claude failed for another reason → nothing to resume', async () => {
   assert.equal((await session([init(), { type: 'result', subtype: 'error_during_execution', is_error: true }])).id, undefined);
 });
 
+const finished = (text) => ({ type: 'result', subtype: 'success', is_error: false, result: text });
+
+test('an answer around the verdict → its session is resumed for the verdict alone, and the answer is kept', async () => {
+  const r = await session([init(), finished('I found no problems. I checked:\n- the alerts\n\nVERDICT: CLEAN')]);
+  assert.equal(r.id, ID);
+  assert.equal(r.kept, true);
+});
+
+test('an answer in the right shape → nothing to resume', async () => {
+  for (const text of ['VERDICT: CLEAN', 'VERDICT: FINDINGS\n1. [P1] a.js:1 — x — y → z — w']) {
+    assert.equal((await session([init(), finished(text)])).id, undefined, text);
+  }
+});
+
 test('a session id that is not a plain UUID never reaches claude_args', async () => {
   assert.equal((await session([init(`${ID} --dangerously-skip-permissions`), { type: 'result', subtype: 'error_max_turns' }])).id, undefined);
 });
@@ -281,11 +295,11 @@ const answer = (model = GATE) => ({ type: 'assistant', message: { model, content
 const done = (text, models = [GATE]) => ({ type: 'result', subtype: 'success', is_error: false, result: text, modelUsage: Object.fromEntries(models.map(m => [m, {}])) });
 const gateInit = (servers = [{ name: 'search', status: 'connected' }]) => ({ type: 'system', subtype: 'init', model: GATE, mcp_servers: servers });
 async function verdict(messages, { token = 'true', first } = {}) {
-  const out = {}, warnings = [];
+  const out = {}, warnings = [], info = [];
   Object.assign(process.env, { HAS_TOKEN: token, MODEL: GATE, EXECUTION_FILE: 'last', FIRST_FILE: first ? 'first' : '' });
   const fs = { readFileSync: (f) => { const m = f === 'first' ? first : messages; if (m === undefined) throw new Error('ENOENT'); return JSON.stringify(m); } };
-  await extractVerdict(() => fs, { setOutput: (k, v) => { out[k] = v; }, warning: (w) => warnings.push(w) });
-  return { ...out, warnings };
+  await extractVerdict(() => fs, { setOutput: (k, v) => { out[k] = v; }, warning: (w) => warnings.push(w), info: (m) => info.push(m) });
+  return { ...out, warnings, info };
 }
 
 test('after a wrap-up, a first run on another model still voids the verdict', async () => {
@@ -405,6 +419,31 @@ test('a FINDINGS answer with any other line gives no verdict', async () => {
     const r = await verdict([gateInit(), answer(), done(bad)]);
     assert.equal(r.verdict, 'unavailable');
     assert.match(r.reason, /verdict format/);
+  }
+});
+
+test('an answer that gave no verdict is printed in the run log, scrubbed', async () => {
+  const r = await verdict([gateInit(), answer(), done('I checked the alerts with @codex.\n\nVERDICT: CLEAN')]);
+  assert.equal(r.verdict, 'unavailable');
+  const log = r.info.join('\n');
+  assert.match(log, /I checked the alerts/);
+  assert.ok(!log.includes('@codex'));
+  assert.equal((await verdict([gateInit(), answer(), done('VERDICT: CLEAN')])).info.length, 0);
+});
+
+// The session finder resumes exactly the answers the extractor would reject for their shape, so the two
+// copies of the shape test cannot drift apart.
+test('the session finder and the extractor agree on the shape', async () => {
+  for (const text of [
+    'VERDICT: CLEAN', 'VERDICT: CLEAN\nNot reviewed: none', 'VERDICT: FINDINGS\n1. [P0] a.js:1 — x — y → z — w\nNot reviewed: c.js',
+    'I found no problems.\n\nVERDICT: CLEAN', 'VERDICT: CLEAN\nI could not read the files.', 'I refuse. The expected format is:\nVERDICT: CLEAN',
+    'VERDICT: FINDINGS\nVERDICT: CLEAN', 'VERDICT: FINDINGS', 'VERDICT: CLEAN\n1. [P1] a.js:1 — x', 'VERDICT:CLEAN', '',
+    'VERDICT: CLEAN\nNot reviewed: none\nNot reviewed: src/unread.js', 'VERDICT: FINDINGS\nNot reviewed: none\n1. [P1] a.js:1 — x',
+    'VERDICT: FINDINGS\n1. [P1] a.js:1 — x\nAlso, note that…', 'VERDICT: FINDINGS\n1. [P1] a.js:1 — x\n  continued here',
+  ]) {
+    const resumed = (await session([init(), finished(text)])).id === ID;
+    const rejected = /verdict format/.test((await verdict([gateInit(), answer(), done(text)])).reason);
+    assert.equal(resumed, rejected, JSON.stringify(text));
   }
 });
 
