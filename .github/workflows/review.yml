@@ -246,7 +246,8 @@ jobs:
     name: Coordinate
     needs: [glm, post]
     # Woken when GLM's comment is posted, and when Codex creates or edits its review-state summary comment
-    # (issue_comment runs only from the default branch).
+    # (issue_comment runs only from the default branch). Nothing else wakes it: after a ruling, and on an enrolment
+    # pull request, scripts/recheck.sh re-runs this job.
     if: >-
       always() && (
         (github.event_name == 'pull_request' && needs.post.result != 'skipped' && needs.post.result != 'cancelled')
@@ -361,6 +362,14 @@ jobs:
               return;
             }
             const sources = [codexFindings && 'Codex', glmVerdict === 'findings' && 'GLM'].filter(Boolean).join(' and ');
+            // The owner rejects findings with one comment for this head. It counts only when newer than both reviews'
+            // results, so a finding that lands after it still blocks, and only once every Codex thread is resolved.
+            const ruling = comments.findLast(c => c.user.login === owner && c.body.startsWith(`<!-- ai-review:ruled sha=${head} -->`));
+            const codexComment = comments.findLast(c => c.user.login === 'chatgpt-codex-connector[bot]' && c.body.includes('codex-review-state:v1'));
+            if (ruling && codexDone && openCodexThreads === 0 && [glm, codexComment].every(c => c.updated_at < ruling.created_at)) {
+              await status('success', `the owner ruled on the findings from ${sources}`);
+              return;
+            }
             if (process.env.CODEX_FIXES !== 'true') {
               // The session must not treat an all-rejected head as clean while this review can still add findings.
               await status('failure', `findings to rule on from ${sources}${codexDone ? '' : '; Codex security review still running'}`);
