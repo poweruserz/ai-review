@@ -323,6 +323,20 @@ test('only the two permitted answer shapes give a verdict', async () => {
   }
 });
 
+test('a record that does not name the model everywhere gives no verdict', async () => {
+  const cases = [
+    [{ ...gateInit(), model: undefined }, answer(), done('VERDICT: CLEAN')],
+    [gateInit(), { type: 'assistant', message: { content: [] } }, done('VERDICT: CLEAN')],
+    [gateInit(), answer(), { ...done('VERDICT: CLEAN'), modelUsage: {} }],
+    [gateInit(), done('VERDICT: CLEAN')],
+  ];
+  for (const messages of cases) {
+    const r = await verdict(messages);
+    assert.equal(r.verdict, 'unavailable');
+    assert.match(r.reason, /does not name the model/);
+  }
+});
+
 test('a review without the search server gives no verdict', async () => {
   for (const servers of [[], [{ name: 'search', status: 'failed' }], [{ name: 'github_comment', status: 'connected' }]]) {
     const r = await verdict([gateInit(servers), answer(), done('VERDICT: CLEAN')]);

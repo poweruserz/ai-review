@@ -343,12 +343,13 @@ jobs:
               const result = messages.filter(m => m.type === 'result').at(-1);
               // The review is the security gate, so a verdict counts only when every answer came from the gate's
               // model: a fallback model, or a synthetic error message, gives no verdict.
-              const models = new Set([
-                ...all.filter(m => m.type === 'system' && m.subtype === 'init').map(m => m.model),
-                ...all.filter(m => m.type === 'assistant').map(m => m.message?.model),
-                ...all.filter(m => m.type === 'result').flatMap(m => Object.keys(m.modelUsage ?? {})),
-              ].filter(Boolean));
-              const wrong = [...models].filter(m => m !== process.env.MODEL);
+              const inits = all.filter(m => m.type === 'system' && m.subtype === 'init').map(m => m.model);
+              const answers = all.filter(m => m.type === 'assistant').map(m => m.message?.model);
+              const usage = all.filter(m => m.type === 'result').flatMap(m => Object.keys(m.modelUsage ?? {}));
+              const models = [...inits, ...answers, ...usage];
+              // Fails closed: a record that names no model on an init, an answer or the usage proves nothing.
+              const unlabelled = !inits.length || !answers.length || !usage.length || models.some(m => !m);
+              const wrong = [...new Set(models.filter(Boolean))].filter(m => m !== process.env.MODEL);
               // The review was promised grep and glob; without the server it ran blind, and the action drops the
               // config silently (anthropics/claude-code-action#1004), so the init message has to prove it started.
               const search = all.filter(m => m.type === 'system' && m.subtype === 'init').flatMap(m => m.mcp_servers ?? []).find(s => s.name === 'search');
@@ -362,6 +363,7 @@ jobs:
               const shaped = head && !rest.some(l => /^VERDICT:/.test(l))
                 && (head[1] === 'CLEAN' ? rest.length === 0 : findings > 0);
               if (wrong.length) reason = `answers from ${wrong.join(', ')}, not ${process.env.MODEL}`;
+              else if (unlabelled) reason = 'the execution record does not name the model on every answer';
               else if (search?.status !== 'connected') reason = `the search tools did not start (${search?.status ?? 'absent'}): see the workflow run`;
               else if (!result || result.is_error) reason = `no verdict: ${result?.subtype ?? 'no result'}`;
               else if (!shaped) reason = 'the answer did not follow the verdict format: see the workflow run';
