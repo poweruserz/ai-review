@@ -20,8 +20,8 @@ trailer="$(printf '🤖 Generated with [Claude Code](https://claude.com/claude-c
 IFS=$'\t' read -r private fork archived branch < <(gh api "repos/$OWNER/$REPO" --jq '[.private, .fork, .archived, .default_branch] | @tsv')
 if [ "$fork" = true ] || [ "$archived" = true ]; then say "fork or archived, skipped"; exit 0; fi
 
-# The token goes from the file straight to gh and is never printed. CODEX_TRIGGER_PAT is only for
-# codex-fixes, which is off, so the owner's PAT is not copied into every repository.
+# The token goes from the file straight to gh and is never printed. CODEX_TRIGGER_PAT lives only in the
+# ai-review repository (for nudge-codex.yml; codex-fixes is off), so the owner's PAT is not copied into every repository.
 tr -d '\r\n' < "$CLAUDE_TOKEN_FILE" | gh secret set CLAUDE_CODE_OAUTH_TOKEN -R "$OWNER/$REPO"
 say "secret set"
 
