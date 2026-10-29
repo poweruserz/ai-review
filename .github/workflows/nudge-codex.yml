@@ -1,0 +1,36 @@
+name: Nudge Codex
+
+# Codex skips a push that lands while it is still reviewing the one before, and a review it starts on a freshly
+# opened pull request can stay `running` forever; the owner commenting `@codex review` makes it finish in a few
+# minutes. This comments on the owner's behalf, every quarter hour, on each open pull request in the owner's
+# repositories whose head has waited 20 minutes for Codex (scripts/nudge-codex.mjs), so no session has to watch.
+# It needs CODEX_TRIGGER_PAT in this repository: a fine-grained PAT on all repositories with Issues and Pull
+# requests read and write and Commit statuses read, because Codex ignores comments from bot accounts. Without
+# the secret the run does nothing.
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  nudge:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      HAS_PAT: ${{ secrets.CODEX_TRIGGER_PAT != '' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        if: env.HAS_PAT == 'true'
+        with:
+          persist-credentials: false
+
+      - name: Ask Codex where its review is overdue
+        if: env.HAS_PAT == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.CODEX_TRIGGER_PAT }}
+        run: node scripts/nudge-codex.mjs "$GITHUB_REPOSITORY_OWNER"
