@@ -9,14 +9,16 @@ import { pathToFileURL } from 'node:url';
 
 export const WAIT_MINUTES = 20;
 
-// The decision alone, so it can be tested: `statuses` are the head's commit statuses, `comments` the pull
-// request's, `owner` the account that will comment. Returns 'kick' or the reason not to.
-export function decide({ head, statuses, comments, owner, now }) {
+// The decision alone, so it can be tested: `pushed` is when the head was pushed, `statuses` are its commit
+// statuses, `comments` the pull request's, `owner` the account that will comment. Returns 'kick' or the reason not to.
+export function decide({ head, pushed, statuses, comments, owner, now }) {
   const mine = statuses.filter(s => s.context === 'ai-review').sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at));
   const latest = mine.at(-1);
   if (!latest) return 'no ai-review status';
   if (latest.state !== 'pending' || !latest.description.startsWith('waiting for Codex')) return `${latest.state}: ${latest.description}`;
-  const since = Date.parse(mine[0].created_at); // the coordinator's first status follows the push within a minute
+  // Without a Codex comment to wake it, the coordinator's first status comes only after Claude's review, so the
+  // push itself is the clock: a request before that status counts, and the 20 minutes start at the push.
+  const since = pushed ?? Date.parse(mine[0].created_at);
   const minutes = (now - since) / 60000;
   if (minutes < WAIT_MINUTES) return `${minutes.toFixed(0)} min since the push`;
   let codex;
@@ -53,7 +55,10 @@ export function main(account) {
       head = pr.head.sha;
       const statuses = api(`repos/${repo}/commits/${head}/statuses`, 'per_page=100');
       const comments = api(`repos/${repo}/issues/${item.number}/comments`, 'per_page=100');
-      const verdict = decide({ head, statuses, comments, owner, now });
+      // The review workflow's pull_request run starts within seconds of the push.
+      const runs = api(`repos/${repo}/actions/runs`, `head_sha=${head}`, 'event=pull_request', 'per_page=20').flatMap(p => p.workflow_runs ?? []);
+      const pushed = runs.length ? Math.min(...runs.map(r => Date.parse(r.created_at))) : undefined;
+      const verdict = decide({ head, pushed, statuses, comments, owner, now });
       console.log(line(visible, repo, item.number, head, verdict));
       if (verdict !== 'kick') continue;
       gh('api', '-X', 'POST', `repos/${repo}/issues/${item.number}/comments`, '-f', `body=@codex review\n\n<!-- ai-review:nudge sha=${head} -->`);

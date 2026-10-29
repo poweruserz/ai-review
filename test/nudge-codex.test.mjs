@@ -11,7 +11,7 @@ const codex = (sha, security = 'completed') => ({
 });
 const ask = (minute, login = 'poweruserz') => ({ user: { login }, created_at: t(minute), body: '@codex review' });
 const base = {
-  head, owner: 'poweruserz', now: Date.parse(t(25)),
+  head, owner: 'poweruserz', now: Date.parse(t(25)), pushed: Date.parse(t(0)),
   statuses: [status('pending', 'waiting for Codex and Claude', 0), status('pending', 'waiting for Codex', 4)],
   comments: [],
 };
@@ -54,4 +54,11 @@ test('already asked since the push, by a session or by this script: nothing; an 
   assert.match(decide({ ...base, comments: [{ ...ask(21), body: '@codex review\n\n<!-- ai-review:nudge sha=' + head + ' -->' }] }), /already asked/);
   assert.equal(decide({ ...base, comments: [ask(-5)] }), 'kick');
   assert.equal(decide({ ...base, comments: [ask(21, 'someone-else')] }), 'kick');
+});
+
+test('the clock is the push, not the first status: an ask before a late first status counts, and the wait starts at the push', () => {
+  const late = { ...base, statuses: [status('pending', 'waiting for Codex', 10)], now: Date.parse(t(35)) };
+  assert.match(decide({ ...late, comments: [ask(2)] }), /already asked/);
+  assert.equal(decide({ ...late, now: Date.parse(t(22)) }), 'kick');
+  assert.match(decide({ ...late, pushed: undefined, now: Date.parse(t(22)) }), /12 min since the push/);
 });
