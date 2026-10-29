@@ -55,9 +55,13 @@ export function main(account) {
       head = pr.head.sha;
       const statuses = api(`repos/${repo}/commits/${head}/statuses`, 'per_page=100');
       const comments = api(`repos/${repo}/issues/${item.number}/comments`, 'per_page=100');
-      // The review workflow's pull_request run starts within seconds of the push.
-      const runs = api(`repos/${repo}/actions/runs`, `head_sha=${head}`, 'event=pull_request', 'per_page=20').flatMap(p => p.workflow_runs ?? []);
-      const pushed = runs.length ? Math.min(...runs.map(r => Date.parse(r.created_at))) : undefined;
+      // The review workflow's pull_request run starts within seconds of the push. The lookup needs the PAT's
+      // Actions read permission; without it the first status is the clock, as decide() falls back to it.
+      let pushed;
+      try {
+        const runs = api(`repos/${repo}/actions/runs`, `head_sha=${head}`, 'event=pull_request', 'per_page=20').flatMap(p => p.workflow_runs ?? []);
+        if (runs.length) pushed = Math.min(...runs.map(r => Date.parse(r.created_at)));
+      } catch {}
       const verdict = decide({ head, pushed, statuses, comments, owner, now });
       console.log(line(visible, repo, item.number, head, verdict));
       if (verdict !== 'kick') continue;

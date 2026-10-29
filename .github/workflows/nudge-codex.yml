@@ -5,8 +5,8 @@ name: Nudge Codex
 # minutes. This comments on the owner's behalf, every quarter hour, on each open pull request in the owner's
 # repositories whose head has waited 20 minutes for Codex (scripts/nudge-codex.mjs), so no session has to watch.
 # It needs CODEX_TRIGGER_PAT in this repository: a fine-grained PAT on all repositories with Issues and Pull
-# requests read and write and Commit statuses read, because Codex ignores comments from bot accounts. Without
-# the secret the run does nothing.
+# requests read and write, Commit statuses read and Actions read (to date the push by the review workflow's run),
+# because Codex ignores comments from bot accounts. Without the secret the run does nothing.
 
 on:
   schedule:
