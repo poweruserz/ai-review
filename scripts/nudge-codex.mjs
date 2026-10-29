@@ -31,7 +31,12 @@ export function decide({ head, statuses, comments, owner, now }) {
   return 'kick';
 }
 
-const gh = (...args) => execFileSync('gh', args, { encoding: 'utf8', maxBuffer: 16 << 20 });
+// The run log is public (this repository is), so a private repository's line names nothing: not the repository,
+// the pull request, the head or the status text, which can carry a branch name.
+export const line = (visible, repo, number, head, text) =>
+  visible ? `${repo}#${number} ${head.slice(0, 7)}: ${text}` : `a private repository: ${text === 'kick' ? 'asked' : text.startsWith('failed') ? 'failed' : 'nothing to do'}`;
+
+const gh = (...args) => execFileSync('gh', args, { encoding: 'utf8', maxBuffer: 16 << 20, stdio: ['ignore', 'pipe', 'ignore'] });
 const api = (path, ...fields) => JSON.parse(gh('api', '-X', 'GET', '--paginate', '--slurp', path, ...fields.flatMap(f => ['-f', f]))).flat();
 
 export function main(account) {
@@ -40,15 +45,23 @@ export function main(account) {
   const items = api('search/issues', `q=owner:${account} is:pr is:open draft:false`, 'per_page=100').flatMap(p => p.items ?? []);
   for (const item of items) {
     const repo = item.repository_url.split('/').slice(-2).join('/');
-    const pr = api(`repos/${repo}/pulls/${item.number}`)[0];
-    if (pr.head.repo?.full_name !== repo) continue; // a fork's head gets no status
-    const head = pr.head.sha;
-    const statuses = api(`repos/${repo}/commits/${head}/statuses`, 'per_page=100');
-    const comments = api(`repos/${repo}/issues/${item.number}/comments`, 'per_page=100');
-    const verdict = decide({ head, statuses, comments, owner, now });
-    console.log(`${repo}#${item.number} ${head.slice(0, 7)}: ${verdict}`);
-    if (verdict !== 'kick') continue;
-    gh('api', '-X', 'POST', `repos/${repo}/issues/${item.number}/comments`, '-f', `body=@codex review\n\n<!-- ai-review:nudge sha=${head} -->`);
+    let visible = false, head = '';
+    try {
+      const pr = api(`repos/${repo}/pulls/${item.number}`)[0];
+      visible = !pr.base.repo.private;
+      if (pr.head.repo?.full_name !== repo) continue; // a fork's head gets no status
+      head = pr.head.sha;
+      const statuses = api(`repos/${repo}/commits/${head}/statuses`, 'per_page=100');
+      const comments = api(`repos/${repo}/issues/${item.number}/comments`, 'per_page=100');
+      const verdict = decide({ head, statuses, comments, owner, now });
+      console.log(line(visible, repo, item.number, head, verdict));
+      if (verdict !== 'kick') continue;
+      gh('api', '-X', 'POST', `repos/${repo}/issues/${item.number}/comments`, '-f', `body=@codex review\n\n<!-- ai-review:nudge sha=${head} -->`);
+    } catch (e) {
+      // gh's error message repeats the request path, so only a public repository's line carries it.
+      console.log(line(visible, repo, item.number, head, `failed: ${visible ? e.message.split('\n')[0] : ''}`.trim()));
+      process.exitCode = 1;
+    }
   }
 }
 

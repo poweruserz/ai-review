@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { decide } from '../scripts/nudge-codex.mjs';
+import { decide, line } from '../scripts/nudge-codex.mjs';
 
 const head = 'a'.repeat(40);
 const t = (minute) => new Date(Date.UTC(2026, 9, 29, 10, minute)).toISOString();
@@ -38,6 +38,15 @@ test('Codex finished on this head and only the coordinator is late: nothing', ()
 test('Codex finished on an older head, or its security review hangs on this one: nudge', () => {
   assert.equal(decide({ ...base, comments: [codex('b'.repeat(40))], statuses: [...base.statuses, status('pending', 'waiting for Codex; Codex last reviewed bbbbbbb', 5)] }), 'kick');
   assert.equal(decide({ ...base, comments: [codex(head, 'running')] }), 'kick');
+});
+
+test("the public run log names a private repository's pull request, head and status in no case", () => {
+  assert.equal(line(true, 'poweruserz/pub', 7, head, 'success: Codex and Claude found nothing'), `poweruserz/pub#7 ${head.slice(0, 7)}: success: Codex and Claude found nothing`);
+  for (const [text, shown] of [['kick', 'asked'], ['error: into feat/secret-branch, not main', 'nothing to do'], ['failed: HTTP 404 repos/poweruserz/hidden-repo/pulls/7', 'failed'], ['failed:', 'failed']]) {
+    const out = line(false, 'poweruserz/hidden-repo', 7, head, text);
+    assert.equal(out, `a private repository: ${shown}`);
+    for (const secret of ['hidden-repo', '7', head.slice(0, 7), 'secret-branch', '404']) assert.ok(!out.includes(secret), `${out} leaks ${secret}`);
+  }
 });
 
 test('already asked since the push, by a session or by this script: nothing; an ask from before the push does not count', () => {
