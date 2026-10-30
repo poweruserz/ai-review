@@ -337,13 +337,14 @@ test('a record with Reads but no successful Read of the diff turns CLEAN into a 
 });
 
 test('no verdict names its cause from the API error lines, so the session knows whether to renew, wait or re-run', async () => {
-  const apiError = (text) => ({ type: 'assistant', message: { model: GATE, content: [{ type: 'text', text }] } });
+  // Claude Code labels an API error message `<synthetic>`, which the model check refuses first; the cause still lands.
+  const apiError = (text) => ({ type: 'assistant', message: { model: '<synthetic>', content: [{ type: 'text', text }] } });
   const failed = { type: 'result', subtype: 'error_during_execution', is_error: true, modelUsage: { [GATE]: {} } };
   const reason = async (...m) => (await verdict([gateInit(), answer(), ...m, failed])).reason;
-  assert.match(await reason(apiError('API Error: 401 {"type":"error","error":{"type":"authentication_error","message":"OAuth token has expired"}}')), /^no verdict: error_during_execution; the token was rejected/);
+  assert.match(await reason(apiError('API Error: 401 {"type":"error","error":{"type":"authentication_error","message":"OAuth token has expired"}}')), /^answers from <synthetic>, not claude-opus-5-5; the token was rejected/);
   assert.match(await reason(apiError("API Error: 429 You've hit your limit · resets 3pm")), /; the subscription usage limit was hit/);
   assert.match(await reason(apiError('API Error: 529 {"type":"error","error":{"type":"overloaded_error"}}')), /; the API was unavailable/);
-  assert.match(await reason({ ...failed, result: 'fetch failed' }), /; the API was unavailable/);
+  assert.equal(await reason({ ...failed, result: 'fetch failed' }), 'no verdict: error_during_execution; the API was unavailable (overloaded or a server error): re-run now');
   // A 401 in an ordinary answer is not an API error line, and an error with no known text names none.
   assert.equal(await reason(apiError('the endpoint returns 401 when the token is missing')), 'no verdict: error_during_execution');
 });

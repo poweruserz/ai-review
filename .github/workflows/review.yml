@@ -480,21 +480,21 @@ jobs:
               const shaped = head && rest.every(l => /^\d+\. \[P[01]\] .+/.test(l))
                 && (head[1] === 'CLEAN' ? rest.length === 0 : rest.length > 0)
                 && (process.env.FIRST_FILE ? marks.length === 1 : marks.length <= 1) && (marks.length === 0 || lines.at(-1) === marks[0]);
+              // Why there is no verdict, from the API error lines in the record and only those, by pattern, so the
+              // session knows what to do: renew the token, wait for the usage window, or re-run now. Claude Code
+              // labels such a line's message `<synthetic>`, which the model check above rightly refuses, so the
+              // cause is worked out here and added to whichever reason that check or the others set.
+              const errors = all.flatMap(m => (m.type === 'result' && m.is_error ? [String(m.result ?? '')]
+                : m.type === 'assistant' ? content(m).filter(b => b.type === 'text' && /^API Error/i.test(b.text)).map(b => String(b.text)) : []));
+              const cause = [
+                [/authentication_error|OAuth token|\b401\b|invalid.{0,20}(token|api key)/i, 'the token was rejected (expired or revoked): run `claude setup-token`, set the secret again with enrol.sh, then re-run'],
+                [/rate_limit_error|usage limit|hit your limit|\b429\b/i, 'the subscription usage limit was hit: re-run after the window resets'],
+                [/overloaded_error|api_error|\b5(00|02|03|29)\b|internal server error|ECONNRESET|ETIMEDOUT|fetch failed/i, 'the API was unavailable (overloaded or a server error): re-run now'],
+              ].find(([re]) => errors.some(t => re.test(t)))?.[1];
               if (wrong.length) reason = `answers from ${wrong.join(', ')}, not ${process.env.MODEL}`;
               else if (unlabelled) reason = 'the execution record does not name the model on every answer';
               else if (search?.status !== 'connected') reason = `the search tools did not start (${search?.status ?? 'absent'}): see the workflow run`;
-              else if (!result || result.is_error) {
-                // Why, from the error text in the record, so the session knows what to do: renew the token, wait
-                // for the usage window, or re-run now. Only the API error lines are read, and only by pattern.
-                const errors = all.flatMap(m => (m.type === 'result' && m.is_error ? [String(m.result ?? '')]
-                  : m.type === 'assistant' ? content(m).filter(b => b.type === 'text' && /^API Error/i.test(b.text)).map(b => String(b.text)) : []));
-                const cause = [
-                  [/authentication_error|OAuth token|\b401\b|invalid.{0,20}(token|api key)/i, 'the token was rejected (expired or revoked): run `claude setup-token`, set the secret again with enrol.sh, then re-run'],
-                  [/rate_limit_error|usage limit|hit your limit|\b429\b/i, 'the subscription usage limit was hit: re-run after the window resets'],
-                  [/overloaded_error|api_error|\b5(00|02|03|29)\b|internal server error|ECONNRESET|ETIMEDOUT|fetch failed/i, 'the API was unavailable (overloaded or a server error): re-run now'],
-                ].find(([re]) => errors.some(t => re.test(t)))?.[1];
-                reason = `no verdict: ${result?.subtype ?? 'no result'}${cause ? `; ${cause}` : ''}`;
-              }
+              else if (!result || result.is_error) reason = `no verdict: ${result?.subtype ?? 'no result'}`;
               else if (!shaped) reason = 'the answer did not follow the verdict format: see the workflow run';
               // A first answer that said FINDINGS without one finding line left nothing to carry over below, so a
               // resumed CLEAN could launder it.
@@ -517,6 +517,7 @@ jobs:
                   text = ['VERDICT: FINDINGS', ...anchored, ...carried.map((l, i) => `${rest.length + i + 1}. ${l}`)].join('\n');
                 }
               }
+              if (reason && cause) reason = `${reason}; ${cause}`;
             } catch (e) {
               reason = `no result: ${e.message}`;
             }

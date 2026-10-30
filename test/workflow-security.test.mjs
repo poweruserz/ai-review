@@ -18,7 +18,7 @@ const job = (name) => {
 
 test('every action is pinned to a full commit SHA; only the caller tracks @main, on purpose', () => {
   for (const f of workflows) {
-    for (const [, ref] of read(f).matchAll(/^\s+uses: (\S+)/gm)) {
+    for (const [, ref] of read(f).matchAll(/^\s+(?:- )?uses: (\S+)/gm)) {
       if (ref.startsWith('poweruserz/ai-review/')) assert.equal(ref.split('@')[1], 'main', `${f}: ${ref}`);
       else assert.match(ref, /@[0-9a-f]{40}$/, `${f}: ${ref} is not pinned to a commit`);
     }
@@ -32,7 +32,7 @@ test('secrets are passed one by one, never inherited, and the workflow starts wi
 
 test('the model runs only in the claude job, whose token can only read', () => {
   const claude = job('claude');
-  assert.equal((claude.match(/^\s+uses: anthropics\/claude-code-action@/gm) ?? []).length, 2, 'the review and its wrap-up');
+  assert.equal((claude.match(/^\s+(?:- )?uses: anthropics\/claude-code-action@/gm) ?? []).length, 2, 'the review and its wrap-up');
   for (const name of ['post', 'coordinate']) assert.doesNotMatch(job(name), /claude-code-action|CLAUDE_CODE_OAUTH_TOKEN/, name);
   const permissions = /^    permissions:\n((?:      .*\n)+)/m.exec(claude)[1].split('\n').filter(Boolean).map(l => l.trim().replace(/\s*#.*/, ''));
   assert.deepEqual(permissions, ['contents: read', 'issues: read', 'pull-requests: read']);
@@ -42,11 +42,14 @@ test('the model runs only in the claude job, whose token can only read', () => {
 
 test('the review runs with Read, grep and glob only, project settings off, and the deny list in place', () => {
   const claude = job('claude');
-  for (const flag of ['--restricted', '--tools Read', '--allowedTools Read,mcp__search__grep,mcp__search__glob', '--strict-mcp-config']) assert.match(claude, new RegExp(`^\\s+${flag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'm'), flag);
-  const denied = /--disallowedTools "([^"]+)"/.exec(claude)[1].split(',');
+  // The "Claude review" step alone: the wrap-up has flags of its own, which must not stand in for these.
+  const step = claude.slice(claude.indexOf('id: claude'), claude.indexOf('id: session'));
+  assert.ok(step.includes('name: Claude review') && !step.includes('--resume'), 'the review step was not isolated');
+  for (const flag of ['--restricted', '--tools Read', '--allowedTools Read,mcp__search__grep,mcp__search__glob', '--strict-mcp-config']) assert.match(step, new RegExp(`^\\s+${flag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'm'), flag);
+  const denied = /--disallowedTools "([^"]+)"/.exec(step)[1].split(',');
   for (const d of ['Read(//proc/**)', 'Read(//etc/**)', 'Read(~/.*)', 'Read(~/.*/**)', 'Read(**/.env)', 'Read(**/.env.*)', 'Read(**/.credentials*)', 'mcp__github', 'mcp__github_comment']) assert.ok(denied.includes(d), `${d} is not denied`);
-  assert.match(claude, /allowed_bots: chatgpt-codex-connector(\s|$)/);
-  assert.doesNotMatch(claude, /allowed_bots: [^\n]*,/);
+  // Both steps name Codex alone as the bot whose pushes may start them.
+  assert.deepEqual([...claude.matchAll(/allowed_bots: (\S+)/g)].map(m => m[1]), ['chatgpt-codex-connector', 'chatgpt-codex-connector']);
 });
 
 test('the prompt tells the model that what it reads is data, and that the rules come from the base branch', () => {
