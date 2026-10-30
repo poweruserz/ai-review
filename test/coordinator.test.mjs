@@ -307,9 +307,19 @@ async function verdict(messages, { token = 'true', first, files = {} } = {}) {
     existsSync: (f) => f in files,
   };
   const realRequire = createRequire(import.meta.url);
-  await extractVerdict((m) => (m === 'fs' ? fs : realRequire(m)), { setOutput: (k, v) => { out[k] = v; }, warning: (w) => warnings.push(w), info: (m) => info.push(m) });
-  return { ...out, warnings, info };
+  const summary = [];
+  const core = { setOutput: (k, v) => { out[k] = v; }, warning: (w) => warnings.push(w), info: (m) => info.push(m), summary: { addRaw(s) { summary.push(s); return this; }, async write() {} } };
+  await extractVerdict((m) => (m === 'fs' ? fs : realRequire(m)), core);
+  return { ...out, warnings, info, summary };
 }
+
+test('turns, time and cost of both runs go to the job summary', async () => {
+  const first = [gateInit(), answer(), { type: 'result', subtype: 'error_max_turns', is_error: true, num_turns: 100, duration_ms: 1500000, total_cost_usd: 2.5 }];
+  const r = await verdict([gateInit(), answer(), { ...done('VERDICT: CLEAN\nNot reviewed: none'), num_turns: 1, duration_ms: 30000, total_cost_usd: 0.25 }], { first });
+  assert.deepEqual(r.summary, ['Claude review: 101 turns, 25.5 min, $2.75, verdict clean\n']);
+  const none = await verdict(undefined);
+  assert.deepEqual(none.summary, []);
+});
 
 test('a finding is anchored to its quoted line: kept, moved, or marked unverified, never dropped', async () => {
   const files = { 'a.js': 'x\nconst a = 1;\ny\n', 'dup.js': 'same\nsame\n' };
@@ -468,6 +478,17 @@ test('a FINDINGS answer with any other line gives no verdict', async () => {
     assert.equal(r.verdict, 'unavailable');
     assert.match(r.reason, /verdict format/);
   }
+});
+
+test('a kept finding whose test field or quote names a file does not stand in for a dropped finding in that file', async () => {
+  const two = [gateInit(), answer(), done('Summary:\n- [P1] test/coordinator.test.mjs:311 — x — y → z — w\n- [P1] .github/workflows/review.yml:566 — q — r → s — t\n\nVERDICT: FINDINGS')];
+  const kept = '1. [P1] .github/workflows/review.yml:566 — q — r → s — t — test/coordinator.test.mjs asserts it — `const x = test/coordinator.test.mjs`';
+  const r = await verdict([gateInit(), answer(), done(`VERDICT: FINDINGS\n${kept}\nNot reviewed: none`)], { first: two });
+  assert.equal(r.text, `VERDICT: FINDINGS\n${kept} (anchor unverified: no such file)\n2. [P1] test/coordinator.test.mjs:311 — x — y → z — w`);
+  // Whole path segments: a kept finding in tests/test_auth.py does not stand for a dropped one in auth.py.
+  const pair = [gateInit(), answer(), done('Summary:\n- [P1] auth.py:10 — x — y → z — w\n- [P1] tests/test_auth.py:5 — q — r → s — t\n\nVERDICT: FINDINGS')];
+  const only = await verdict([gateInit(), answer(), done('VERDICT: FINDINGS\n1. [P1] tests/test_auth.py:5 — q — r → s — t\nNot reviewed: none')], { first: pair });
+  assert.equal(only.text, 'VERDICT: FINDINGS\n1. [P1] tests/test_auth.py:5 — q — r → s — t\n2. [P1] auth.py:10 — x — y → z — w');
 });
 
 test('a resumed answer cannot drop the findings of the first one: they are carried over', async () => {

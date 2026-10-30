@@ -374,11 +374,12 @@ jobs:
             Not reviewed: none
 
             VERDICT: FINDINGS
-            1. [P0|P1] path:line — problem — concrete input → wrong outcome — suggested fix — `that line, quoted from the file`
+            1. [P0|P1] path:line — problem — concrete input → wrong outcome — suggested fix — the test that fails today (its file and what it asserts, or none) — `that line, quoted from the file`
             Not reviewed: none
 
             The last line names the changed files you did not read, or none. The quoted line is checked against
-            the file, so the finding lands on the right line for whoever fixes it.
+            the file, so the finding lands on the right line for whoever fixes it. The test is for them too:
+            written first, it proves the finding, and one that cannot be made to fail refutes it.
             P0 breaks production, loses or exposes data, or is exploitable. P1 is a real bug users will hit.
             Anything smaller is not a finding: leave it out rather than mention it.
 
@@ -455,7 +456,7 @@ jobs:
         with:
           script: |
             const fs = require('fs');
-            let text = '', verdict = 'unavailable', reason = '', answer = '', first = '';
+            let text = '', verdict = 'unavailable', reason = '', answer = '', first = '', results = [];
             if (process.env.HAS_TOKEN !== 'true') reason = 'the CLAUDE_CODE_OAUTH_TOKEN secret is missing: update the caller';
             else if (process.env.SEARCH_OUTCOME === 'failure') reason = 'the search tools could not be set up: see the workflow run';
             else try {
@@ -465,6 +466,7 @@ jobs:
               // an earlier run on another one.
               const earlier = process.env.FIRST_FILE ? read(process.env.FIRST_FILE) : [];
               const all = [...earlier, ...messages];
+              results = all.filter(m => m.type === 'result');
               const result = messages.filter(m => m.type === 'result').at(-1);
               answer = result?.result ?? '';
               first = earlier.filter(m => m.type === 'result').at(-1)?.result ?? '';
@@ -541,11 +543,13 @@ jobs:
                 const anchored = rest.map(anchor);
                 text = [lines[0], ...anchored, ...marks].join('\n');
                 // A resumed answer may add the shape, never drop findings: each [P0]/[P1] line of the first answer
-                // whose file the resumed answer does not name is carried over as it was. A wrap-up also names the
-                // files it never got to; a verdict that skipped files is not clean, so they become a finding too,
-                // for the session to review itself.
+                // whose file no resumed finding has as its own path is carried over as it was. Only the path token
+                // counts (the test and the quote name files too), and whole segments (auth.py is not a part of
+                // tests/test_auth.py; lib/a.js still stands for a.js). A wrap-up also names the files it never got
+                // to; a verdict that skipped files is not clean, so they become a finding too, for the session to
+                // review itself.
                 const carried = first.split('\n').map(l => /\[P[01]\] \S.*/.exec(l)?.[0].trimEnd()).filter(Boolean)
-                  .filter(l => { const file = l.split(' ')[1].split(':')[0]; return !(/[./]/.test(file) && rest.some(r => r.includes(file))); });
+                  .filter(l => { const file = l.split(' ')[1].split(':')[0]; return !(/[./]/.test(file) && rest.some(r => { const p = (r.split(' ')[2] ?? '').split(':')[0]; return p === file || p.endsWith(`/${file}`); })); });
                 const unread = lines.find(l => /^Not reviewed: /.test(l))?.slice('Not reviewed: '.length).trim();
                 if (unread && unread.toLowerCase() !== 'none') carried.push(`[P1] ${unread} — not reviewed: the review ran out of turns before reading these — review them yourself before merging`);
                 if (diffUnread) carried.push('[P1] .ai-review.diff — not reviewed: the execution record shows no successful Read of the diff — review the pull request yourself before merging');
@@ -559,6 +563,9 @@ jobs:
               reason = `no result: ${e.message}`;
             }
             if (reason) core.warning(`Claude review unavailable: ${reason}`);
+            // Turns, time and cost per review go to the job summary, so max-turns and the timeouts rest on data.
+            const sum = (k) => results.reduce((n, m) => n + (Number(m[k]) || 0), 0);
+            if (results.length && core.summary) await core.summary.addRaw(`Claude review: ${sum('num_turns')} turns, ${(sum('duration_ms') / 60000).toFixed(1)} min, $${sum('total_cost_usd').toFixed(2)}, verdict ${verdict}${reason ? ` (${reason})` : ''}\n`).write();
             // Claude read untrusted code, which could ask it to repeat a credential or to mention someone: scrub
             // the token, anything shaped like one, hidden markers and mentions before anything posts the text.
             const zwsp = String.fromCharCode(0x200b);
