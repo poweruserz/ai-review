@@ -11,7 +11,7 @@ Reusable GitHub Actions workflow that puts every pull request in poweruserz's re
 | `pending` | reviews are still running | waits |
 | `success` | Codex and Claude found nothing | merges and deploys |
 | `failure` | findings to rule on | reads Codex's inline comments and the Claude comment, fixes the real ones, pushes; each push is a new round |
-| `error` | the pipeline could not finish | stops and reports; when Claude gave no verdict (outage, or the subscription's usage window), re-runs the whole workflow later with `gh run rerun` |
+| `error` | the pipeline could not finish | stops and reports; when Claude gave no verdict (outage, the subscription's usage window, or a review job cancelled by a timeout or a lost runner while its head was still current), re-runs the whole workflow later with `gh run rerun` |
 
 A finding the session rejects gets a ruling instead of a push. The session replies to each Codex thread and resolves it, then posts one pull request comment that starts with `<!-- ai-review:ruled sha=<full head SHA> -->` and gives its reasons. Neither resolving a thread nor that comment wakes the coordinator, so the session then runs `scripts/recheck.sh <repo> <pr>`, which re-runs it. The re-run uses `review.yml` as it was when that head's run started, because GitHub keeps that SHA when a single job is re-run. The coordinator sets `success` only when all of these hold:
 
@@ -19,6 +19,8 @@ A finding the session rejects gets a ruling instead of a push. The session repli
 - It is newer than both reviews' results on that head.
 - Codex has finished.
 - Every Codex thread is resolved.
+
+A ruling that fails one of these leaves `failure`, and the status says which (`ruling not counted: 1 Codex thread open`, `older than the latest review result`, `Codex security review still running`). The GitHub API calls that post the comment and set the status retry three times, because a dropped call there would leave a stale status that nothing re-runs by itself.
 
 So a finding that lands after the ruling still blocks.
 
