@@ -336,6 +336,20 @@ test('a record with Reads but no successful Read of the diff turns CLEAN into a 
   assert.equal((await verdict([gateInit(), answer(), done('VERDICT: CLEAN')])).verdict, 'clean');
 });
 
+test('no verdict names its cause from the API error lines, so the session knows whether to renew, wait or re-run', async () => {
+  // Claude Code labels an API error message `<synthetic>`, which the model check refuses first; the cause still lands.
+  const apiError = (text) => ({ type: 'assistant', message: { model: '<synthetic>', content: [{ type: 'text', text }] } });
+  const failed = { type: 'result', subtype: 'error_during_execution', is_error: true, modelUsage: { [GATE]: {} } };
+  const reason = async (...m) => (await verdict([gateInit(), answer(), ...m, failed])).reason;
+  assert.match(await reason(apiError('API Error: 401 {"type":"error","error":{"type":"authentication_error","message":"OAuth token has expired"}}')), /^answers from <synthetic>, not claude-opus-5-5; the token was rejected/);
+  assert.match(await reason(apiError("API Error: 429 You've hit your limit · resets 3pm")), /; the subscription usage limit was hit/);
+  assert.match(await reason(apiError('API Error: 529 {"type":"error","error":{"type":"overloaded_error"}}')), /; the API was unavailable/);
+  assert.equal(await reason({ ...failed, result: 'fetch failed' }), 'no verdict: error_during_execution; the API was unavailable (overloaded or a server error): re-run now');
+  // A 401 in an ordinary answer is not an API error line, and an error with no known text names none.
+  const ordinary = { type: 'assistant', message: { model: GATE, content: [{ type: 'text', text: 'the endpoint returns 401 when the token is missing' }] } };
+  assert.equal(await reason(ordinary), 'no verdict: error_during_execution');
+});
+
 test('after a wrap-up, a first run on another model still voids the verdict', async () => {
   const first = [gateInit(), answer('claude-mythos-5-1'), { type: 'result', subtype: 'error_max_turns', is_error: true, modelUsage: { 'claude-mythos-5-1': {} } }];
   const r = await verdict([gateInit(), answer(), done('VERDICT: CLEAN')], { first });

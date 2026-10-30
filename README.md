@@ -11,7 +11,7 @@ Reusable GitHub Actions workflow that puts every pull request in poweruserz's re
 | `pending` | reviews are still running | waits |
 | `success` | Codex and Claude found nothing | merges and deploys |
 | `failure` | findings to rule on | reads Codex's inline comments and the Claude comment, fixes the real ones, pushes; each push is a new round |
-| `error` | the pipeline could not finish | stops and reports; when Claude gave no verdict (outage, the subscription's usage window, or a review job cancelled by a timeout or a lost runner while its head was still current), re-runs the whole workflow later with `gh run rerun` |
+| `error` | the pipeline could not finish | stops and reports; when Claude gave no verdict (outage, the subscription's usage window, or a review job cancelled by a timeout or a lost runner while its head was still current), re-runs the whole workflow later with `gh run rerun`. The Claude comment names the cause when the record's API error lines show one: a rejected token (renew it with `claude setup-token` and `enrol.sh`), the usage limit (wait for the window), or an unavailable API (re-run now) |
 
 A finding the session rejects gets a ruling instead of a push. The session replies to each Codex thread and resolves it, then posts one pull request comment that starts with `<!-- ai-review:ruled sha=<full head SHA> -->` and gives its reasons. Neither resolving a thread nor that comment wakes the coordinator, so the session then runs `scripts/recheck.sh <repo> <pr>`, which re-runs it. The re-run uses `review.yml` as it was when that head's run started, because GitHub keeps that SHA when a single job is re-run. The coordinator sets `success` only when all of these hold:
 
