@@ -374,11 +374,12 @@ jobs:
             Not reviewed: none
 
             VERDICT: FINDINGS
-            1. [P0|P1] path:line — problem — concrete input → wrong outcome — suggested fix — `that line, quoted from the file`
+            1. [P0|P1] path:line — problem — concrete input → wrong outcome — suggested fix — the test that fails today (its file and what it asserts, or none) — `that line, quoted from the file`
             Not reviewed: none
 
             The last line names the changed files you did not read, or none. The quoted line is checked against
-            the file, so the finding lands on the right line for whoever fixes it.
+            the file, so the finding lands on the right line for whoever fixes it. The test is for them too:
+            written first, it proves the finding, and one that cannot be made to fail refutes it.
             P0 breaks production, loses or exposes data, or is exploitable. P1 is a real bug users will hit.
             Anything smaller is not a finding: leave it out rather than mention it.
 
@@ -455,7 +456,7 @@ jobs:
         with:
           script: |
             const fs = require('fs');
-            let text = '', verdict = 'unavailable', reason = '', answer = '', first = '';
+            let text = '', verdict = 'unavailable', reason = '', answer = '', first = '', results = [];
             if (process.env.HAS_TOKEN !== 'true') reason = 'the CLAUDE_CODE_OAUTH_TOKEN secret is missing: update the caller';
             else if (process.env.SEARCH_OUTCOME === 'failure') reason = 'the search tools could not be set up: see the workflow run';
             else try {
@@ -465,6 +466,7 @@ jobs:
               // an earlier run on another one.
               const earlier = process.env.FIRST_FILE ? read(process.env.FIRST_FILE) : [];
               const all = [...earlier, ...messages];
+              results = all.filter(m => m.type === 'result');
               const result = messages.filter(m => m.type === 'result').at(-1);
               answer = result?.result ?? '';
               first = earlier.filter(m => m.type === 'result').at(-1)?.result ?? '';
@@ -559,6 +561,9 @@ jobs:
               reason = `no result: ${e.message}`;
             }
             if (reason) core.warning(`Claude review unavailable: ${reason}`);
+            // Turns, time and cost per review go to the job summary, so max-turns and the timeouts rest on data.
+            const sum = (k) => results.reduce((n, m) => n + (Number(m[k]) || 0), 0);
+            if (results.length && core.summary) await core.summary.addRaw(`Claude review: ${sum('num_turns')} turns, ${(sum('duration_ms') / 60000).toFixed(1)} min, $${sum('total_cost_usd').toFixed(2)}, verdict ${verdict}${reason ? ` (${reason})` : ''}\n`).write();
             // Claude read untrusted code, which could ask it to repeat a credential or to mention someone: scrub
             // the token, anything shaped like one, hidden markers and mentions before anything posts the text.
             const zwsp = String.fromCharCode(0x200b);

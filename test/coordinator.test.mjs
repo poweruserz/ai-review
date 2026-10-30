@@ -307,9 +307,19 @@ async function verdict(messages, { token = 'true', first, files = {} } = {}) {
     existsSync: (f) => f in files,
   };
   const realRequire = createRequire(import.meta.url);
-  await extractVerdict((m) => (m === 'fs' ? fs : realRequire(m)), { setOutput: (k, v) => { out[k] = v; }, warning: (w) => warnings.push(w), info: (m) => info.push(m) });
-  return { ...out, warnings, info };
+  const summary = [];
+  const core = { setOutput: (k, v) => { out[k] = v; }, warning: (w) => warnings.push(w), info: (m) => info.push(m), summary: { addRaw(s) { summary.push(s); return this; }, async write() {} } };
+  await extractVerdict((m) => (m === 'fs' ? fs : realRequire(m)), core);
+  return { ...out, warnings, info, summary };
 }
+
+test('turns, time and cost of both runs go to the job summary', async () => {
+  const first = [gateInit(), answer(), { type: 'result', subtype: 'error_max_turns', is_error: true, num_turns: 100, duration_ms: 1500000, total_cost_usd: 2.5 }];
+  const r = await verdict([gateInit(), answer(), { ...done('VERDICT: CLEAN\nNot reviewed: none'), num_turns: 1, duration_ms: 30000, total_cost_usd: 0.25 }], { first });
+  assert.deepEqual(r.summary, ['Claude review: 101 turns, 25.5 min, $2.75, verdict clean\n']);
+  const none = await verdict(undefined);
+  assert.deepEqual(none.summary, []);
+});
 
 test('a finding is anchored to its quoted line: kept, moved, or marked unverified, never dropped', async () => {
   const files = { 'a.js': 'x\nconst a = 1;\ny\n', 'dup.js': 'same\nsame\n' };
