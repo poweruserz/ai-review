@@ -294,14 +294,47 @@ const GATE = 'claude-opus-5-5';
 const answer = (model = GATE) => ({ type: 'assistant', message: { model, content: [{ type: 'text', text: '…' }] } });
 const done = (text, models = [GATE]) => ({ type: 'result', subtype: 'success', is_error: false, result: text, modelUsage: Object.fromEntries(models.map(m => [m, {}])) });
 const gateInit = (servers = [{ name: 'search', status: 'connected' }]) => ({ type: 'system', subtype: 'init', model: GATE, mcp_servers: servers });
-async function verdict(messages, { token = 'true', first } = {}) {
+async function verdict(messages, { token = 'true', first, files = {} } = {}) {
   const out = {}, warnings = [], info = [];
   Object.assign(process.env, { HAS_TOKEN: token, MODEL: GATE, EXECUTION_FILE: 'last', FIRST_FILE: first ? 'first' : '' });
-  const fs = { readFileSync: (f) => { const m = f === 'first' ? first : messages; if (m === undefined) throw new Error('ENOENT'); return JSON.stringify(m); } };
+  // The execution files, plus the checkout the anchor check reads.
+  const fs = {
+    readFileSync: (f) => {
+      if (f === 'first' || f === 'last') { const m = f === 'first' ? first : messages; if (m === undefined) throw new Error('ENOENT'); return JSON.stringify(m); }
+      if (f in files) return files[f];
+      throw new Error('ENOENT');
+    },
+    existsSync: (f) => f in files,
+  };
   const realRequire = createRequire(import.meta.url);
   await extractVerdict((m) => (m === 'fs' ? fs : realRequire(m)), { setOutput: (k, v) => { out[k] = v; }, warning: (w) => warnings.push(w), info: (m) => info.push(m) });
   return { ...out, warnings, info };
 }
+
+test('a finding is anchored to its quoted line: kept, moved, or marked unverified, never dropped', async () => {
+  const files = { 'a.js': 'x\nconst a = 1;\ny\n', 'dup.js': 'same\nsame\n' };
+  const line = (p, n, q) => `1. [P1] ${p}:${n} — x — y → z — w — \`${q}\``;
+  const r = async (l) => (await verdict([gateInit(), answer(), done(`VERDICT: FINDINGS\n${l}\nNot reviewed: none`)], { files })).text.split('\n');
+  assert.deepEqual(await r(line('a.js', 2, 'const a = 1;')), ['VERDICT: FINDINGS', line('a.js', 2, 'const a = 1;'), 'Not reviewed: none']);
+  assert.equal((await r(line('a.js', 9, 'const a = 1;')))[1], `${line('a.js', 2, 'const a = 1;')} (anchor: moved from line 9)`);
+  assert.equal((await r(line('a.js', 2, 'const b = 2;')))[1], `${line('a.js', 2, 'const b = 2;')} (anchor unverified: the quoted line is not in the file)`);
+  assert.equal((await r(line('dup.js', 3, 'same')))[1], `${line('dup.js', 3, 'same')} (anchor unverified: the quoted line is on several lines)`);
+  assert.equal((await r(line('gone.js', 1, 'x')))[1], `${line('gone.js', 1, 'x')} (anchor unverified: no such file)`);
+  assert.equal((await r(line('../a.js', 2, 'const a = 1;')))[1], `${line('../a.js', 2, 'const a = 1;')} (anchor unverified: no such file)`);
+  const plain = '1. [P1] a.js:9 — x — y → z — w';
+  assert.equal((await r(plain))[1], plain);
+});
+
+test('a record with Reads but no successful Read of the diff turns CLEAN into a finding; one with no Read at all proves nothing', async () => {
+  const read = (id, path) => ({ type: 'assistant', message: { model: GATE, content: [{ type: 'tool_use', id, name: 'Read', input: { file_path: path } }] } });
+  const result = (id, ok) => ({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: id, is_error: !ok, content: ok ? 'text' : 'File content exceeds maximum allowed tokens' }] } });
+  const unread = await verdict([gateInit(), read('t1', '/w/.ai-review.diff'), result('t1', false), read('t2', '/w/a.js'), result('t2', true), answer(), done('VERDICT: CLEAN')]);
+  assert.equal(unread.verdict, 'findings');
+  assert.equal(unread.text, 'VERDICT: FINDINGS\n1. [P1] .ai-review.diff — not reviewed: the execution record shows no successful Read of the diff — review the pull request yourself before merging');
+  const retried = await verdict([gateInit(), read('t1', '/w/.ai-review.diff'), result('t1', false), read('t2', '/w/.ai-review.diff'), result('t2', true), answer(), done('VERDICT: CLEAN')]);
+  assert.equal(retried.verdict, 'clean');
+  assert.equal((await verdict([gateInit(), answer(), done('VERDICT: CLEAN')])).verdict, 'clean');
+});
 
 test('after a wrap-up, a first run on another model still voids the verdict', async () => {
   const first = [gateInit(), answer('claude-mythos-5-1'), { type: 'result', subtype: 'error_max_turns', is_error: true, modelUsage: { 'claude-mythos-5-1': {} } }];
