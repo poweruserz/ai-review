@@ -543,11 +543,12 @@ jobs:
                 const anchored = rest.map(anchor);
                 text = [lines[0], ...anchored, ...marks].join('\n');
                 // A resumed answer may add the shape, never drop findings: each [P0]/[P1] line of the first answer
-                // whose file the resumed answer does not name is carried over as it was. A wrap-up also names the
-                // files it never got to; a verdict that skipped files is not clean, so they become a finding too,
-                // for the session to review itself.
+                // whose file no resumed finding has as its own path is carried over as it was (only the path token
+                // counts: the test and the quote name files too). A wrap-up also names the files it never got to;
+                // a verdict that skipped files is not clean, so they become a finding too, for the session to
+                // review itself.
                 const carried = first.split('\n').map(l => /\[P[01]\] \S.*/.exec(l)?.[0].trimEnd()).filter(Boolean)
-                  .filter(l => { const file = l.split(' ')[1].split(':')[0]; return !(/[./]/.test(file) && rest.some(r => r.includes(file))); });
+                  .filter(l => { const file = l.split(' ')[1].split(':')[0]; return !(/[./]/.test(file) && rest.some(r => (r.split(' ')[2] ?? '').split(':')[0].includes(file))); });
                 const unread = lines.find(l => /^Not reviewed: /.test(l))?.slice('Not reviewed: '.length).trim();
                 if (unread && unread.toLowerCase() !== 'none') carried.push(`[P1] ${unread} — not reviewed: the review ran out of turns before reading these — review them yourself before merging`);
                 if (diffUnread) carried.push('[P1] .ai-review.diff — not reviewed: the execution record shows no successful Read of the diff — review the pull request yourself before merging');

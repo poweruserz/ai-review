@@ -480,6 +480,13 @@ test('a FINDINGS answer with any other line gives no verdict', async () => {
   }
 });
 
+test('a kept finding whose test field or quote names a file does not stand in for a dropped finding in that file', async () => {
+  const two = [gateInit(), answer(), done('Summary:\n- [P1] test/coordinator.test.mjs:311 — x — y → z — w\n- [P1] .github/workflows/review.yml:566 — q — r → s — t\n\nVERDICT: FINDINGS')];
+  const kept = '1. [P1] .github/workflows/review.yml:566 — q — r → s — t — test/coordinator.test.mjs asserts it — `const x = test/coordinator.test.mjs`';
+  const r = await verdict([gateInit(), answer(), done(`VERDICT: FINDINGS\n${kept}\nNot reviewed: none`)], { first: two });
+  assert.equal(r.text, `VERDICT: FINDINGS\n${kept} (anchor unverified: no such file)\n2. [P1] test/coordinator.test.mjs:311 — x — y → z — w`);
+});
+
 test('a resumed answer cannot drop the findings of the first one: they are carried over', async () => {
   const two = [gateInit(), answer(), done('Two problems:\n1. [P1] a.js:1 — x — y → z — w\n- [P0] src/b.js:2 — y — z → w — v\n\nVERDICT: FINDINGS')];
   // CLEAN after findings → the findings, as they were.
