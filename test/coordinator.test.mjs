@@ -485,6 +485,10 @@ test('a kept finding whose test field or quote names a file does not stand in fo
   const kept = '1. [P1] .github/workflows/review.yml:566 — q — r → s — t — test/coordinator.test.mjs asserts it — `const x = test/coordinator.test.mjs`';
   const r = await verdict([gateInit(), answer(), done(`VERDICT: FINDINGS\n${kept}\nNot reviewed: none`)], { first: two });
   assert.equal(r.text, `VERDICT: FINDINGS\n${kept} (anchor unverified: no such file)\n2. [P1] test/coordinator.test.mjs:311 — x — y → z — w`);
+  // Whole path segments: a kept finding in tests/test_auth.py does not stand for a dropped one in auth.py.
+  const pair = [gateInit(), answer(), done('Summary:\n- [P1] auth.py:10 — x — y → z — w\n- [P1] tests/test_auth.py:5 — q — r → s — t\n\nVERDICT: FINDINGS')];
+  const only = await verdict([gateInit(), answer(), done('VERDICT: FINDINGS\n1. [P1] tests/test_auth.py:5 — q — r → s — t\nNot reviewed: none')], { first: pair });
+  assert.equal(only.text, 'VERDICT: FINDINGS\n1. [P1] tests/test_auth.py:5 — q — r → s — t\n2. [P1] auth.py:10 — x — y → z — w');
 });
 
 test('a resumed answer cannot drop the findings of the first one: they are carried over', async () => {
