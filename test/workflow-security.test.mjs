@@ -42,12 +42,18 @@ test('the model runs only in the claude job, whose token can only read', () => {
 
 test('the review runs with Read, grep and glob only, project settings off, and the deny list in place', () => {
   const claude = job('claude');
+  const slice = (from, to) => { const s = claude.slice(claude.indexOf(from), claude.indexOf(to)); assert.ok(s.startsWith(from) && s.length < claude.length, from); return s; };
+  const own = (text, flag) => assert.match(text, new RegExp(`^\\s+${flag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'm'), flag);
   // The "Claude review" step alone: the wrap-up has flags of its own, which must not stand in for these.
-  const step = claude.slice(claude.indexOf('- name: Claude review'), claude.indexOf('id: session'));
-  assert.ok(step.includes('name: Claude review') && !step.includes('--resume'), 'the review step was not isolated');
-  for (const flag of ['--restricted', '--tools Read', '--allowedTools Read,mcp__search__grep,mcp__search__glob', '--strict-mcp-config']) assert.match(step, new RegExp(`^\\s+${flag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'm'), flag);
-  const denied = /--disallowedTools "([^"]+)"/.exec(step)[1].split(',');
-  for (const d of ['Read(//proc/**)', 'Read(//etc/**)', 'Read(~/.*)', 'Read(~/.*/**)', 'Read(**/.env)', 'Read(**/.env.*)', 'Read(**/.credentials*)', 'mcp__github', 'mcp__github_comment']) assert.ok(denied.includes(d), `${d} is not denied`);
+  const review = slice('- name: Claude review', 'id: session');
+  assert.ok(!review.includes('--resume'));
+  for (const flag of ['--restricted', '--tools Read', '--allowedTools Read,mcp__search__grep,mcp__search__glob', '--strict-mcp-config']) own(review, flag);
+  // The whole deny list, so no entry can go unnoticed: /proc and the host, the home directory's dotfiles, the
+  // runner's credentials under the home directory and in the workspace, and the action's GitHub tools.
+  assert.equal(/--disallowedTools "([^"]+)"/.exec(review)[1], 'Read(//proc/**),Read(//sys/**),Read(//dev/**),Read(//etc/**),Read(//run/**),Read(//var/**),Read(//tmp/**),Read(//root/**),Read(~/.*),Read(~/.*/**),Read(~/**/.credentials*),Read(~/**/.runner),Read(~/**/.env),Read(~/**/.env.*),Read(**/.credentials*),Read(**/.runner),Read(**/.env),Read(**/.env.*),mcp__github_comment,mcp__github_inline_comment,mcp__github_ci,mcp__github');
+  // The wrap-up resumes that session with the token in the same checkout: every tool denied, project settings off.
+  const wrapup = slice('- name: Claude verdict from what it read', 'id: result');
+  for (const flag of ['--resume ${{ steps.session.outputs.id }}', '--restricted', '--tools Read', '--disallowedTools Read "mcp__*"', '--strict-mcp-config']) own(wrapup, flag);
   // Both steps name Codex alone as the bot whose pushes may start them.
   assert.deepEqual([...claude.matchAll(/allowed_bots: (\S+)/g)].map(m => m[1]), ['chatgpt-codex-connector', 'chatgpt-codex-connector']);
 });
