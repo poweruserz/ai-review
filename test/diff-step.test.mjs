@@ -43,10 +43,38 @@ function repo(files) {
 function run(dir, BASE_SHA, HEAD_SHA) {
   const out = join(dir, 'github-output');
   writeFileSync(out, '');
-  execFileSync('bash', ['-c', script], { cwd: dir, encoding: 'utf8', env: { ...process.env, BASE_SHA, HEAD_SHA, GITHUB_OUTPUT: out } });
+  execFileSync('bash', ['-c', script], { cwd: dir, encoding: 'utf8', env: { ...process.env, BASE_SHA, HEAD_SHA, GITHUB_OUTPUT: out, RUNNER_TEMP: dir } });
   const read = (f) => readFileSync(join(dir, f), 'utf8');
-  return { diff: read('.ai-review.diff'), rules: read('.ai-review.rules'), output: read('github-output') };
+  return { diff: read('.ai-review.diff'), skipped: read('.ai-review.skipped.diff'), rules: read('.ai-review.rules'), output: read('github-output') };
 }
+
+test('lockfiles, minified, vendored and generated files leave the diff for a second one, and are listed at its top', () => {
+  const { dir, commit } = repo();
+  const files = (v) => ({ 'a.js': `const a = ${v};\n`, 'package-lock.json': `{"v":${v}}\n`, 'vendor/lib.js': `${v}\n`, 'x.min.js': `${v}\n`, 'deep/dir/yarn.lock': `${v}\n`, 'gen.generated.ts': `${v}\n` });
+  const base = commit(files(1), 'base');
+  git(dir, 'switch', '-q', '-c', 'pr');
+  const head = commit(files(2), 'pr');
+  const { diff, skipped } = run(dir, base, head);
+  const [header, body] = diff.split('=====\n\n');
+  assert.equal(header, '===== Not in this diff (lockfiles, minified, vendored or generated; added, deleted, path), see ./.ai-review.skipped.diff =====\n1\t1\tdeep/dir/yarn.lock\n1\t1\tgen.generated.ts\n1\t1\tpackage-lock.json\n1\t1\tvendor/lib.js\n1\t1\tx.min.js\n');
+  assert.match(body, /^diff --git a\/a\.js b\/a\.js\n/);
+  assert.doesNotMatch(body, /lock|vendor|min\.js|generated/);
+  assert.deepEqual(skipped.match(/^diff --git a\/(\S+)/gm).map(l => l.split('a/')[1]), ['deep/dir/yarn.lock', 'gen.generated.ts', 'package-lock.json', 'vendor/lib.js', 'x.min.js']);
+});
+
+test('a file whose diff runs past 1500 lines is clipped with a marker, and hunks carry 8 lines of context', () => {
+  const { dir, commit } = repo();
+  const thirty = (mid) => Array.from({ length: 30 }, (_, i) => (i === 14 ? mid : `line ${i + 1}`)).join('\n') + '\n';
+  const base = commit({ 'a.js': thirty('old'), 'big.txt': 'small\n' }, 'base');
+  git(dir, 'switch', '-q', '-c', 'pr');
+  const head = commit({ 'a.js': thirty('new'), 'big.txt': Array.from({ length: 2000 }, (_, i) => `row ${i + 1}`).join('\n') + '\n' }, 'pr');
+  const { diff } = run(dir, base, head);
+  assert.match(diff, /^@@ -7,17 \+7,17 @@/m);
+  assert.doesNotMatch(diff, /^===== Not in this diff/);
+  // 5 header lines, the removed line and 1494 added rows make the 1500 kept; 506 of the 2006 are clipped.
+  assert.match(diff, /^\+row 1494\n… clipped: 506 more lines of this file in the diff; Read the file in the checkout\n$/m);
+  assert.doesNotMatch(diff, /row 1495|row 2000/);
+});
 
 test('the diff ignores attributes the pull request adds, and the rules come from the base commit', () => {
   const { dir, commit } = repo();

@@ -22,31 +22,38 @@ const safePath = (p) => {
 // Token by token, so a replacement never rewrites an earlier one: **/ spans directories, * and ? stay within one.
 const globToRegExp = (g) => new RegExp(`^${g.replace(/\*\*\/|\*\*|\*|\?|[^*?]+/g, (t) =>
   t === '**/' ? '(?:.*/)?' : t === '**' ? '.*' : t === '*' ? '[^/]*' : t === '?' ? '[^/]' : t.replace(/[.+^${}()|[\]\\]/g, '\\$&'))}$`);
+// Lockfiles, minified, vendored and generated files, the same list the diff step keeps out of the diff: skipped
+// unless a call asks for them, so a symbol that also lives in a bundle does not push the real hits out.
+const NOISE = ['package-lock.json', 'yarn.lock', 'pnpm-lock.yaml', 'bun.lock', 'bun.lockb', 'Cargo.lock', 'poetry.lock', 'Pipfile.lock', 'composer.lock', 'Gemfile.lock', 'go.sum', 'uv.lock', 'flake.lock', 'packages.lock.json', '*.min.js', '*.min.css', '*.map', 'vendor/**', 'node_modules/**', '*.generated.*'];
+const noiseRe = NOISE.map(n => globToRegExp(`**/${n}`));
+const includeGenerated = { type: 'boolean', description: 'Also search lockfiles, minified, vendored and generated files, which are skipped by default' };
 
 const tools = {
   grep: {
-    description: 'Search file contents in the repository with an extended regular expression (git grep). Returns path:line:text, at most 200 lines.',
+    description: 'Search file contents in the repository with an extended regular expression (git grep). Returns path:line:text, at most 200 lines. Skips lockfiles, minified, vendored and generated files unless include_generated is set.',
     inputSchema: {
       type: 'object',
       properties: {
         pattern: { type: 'string', description: 'Extended regular expression (POSIX ERE)' },
         path: { type: 'string', description: 'File or directory to search, relative to the repository root; the whole repository when omitted' },
         ignore_case: { type: 'boolean', description: 'Case-insensitive match' },
+        include_generated: includeGenerated,
       },
       required: ['pattern'],
     },
-    run: async ({ pattern, path = '.', ignore_case = false }) => {
+    run: async ({ pattern, path = '.', ignore_case = false, include_generated = false }) => {
       if (typeof pattern !== 'string' || !pattern) throw new Error('pattern is required');
-      return clip(await git(['grep', '-n', '-I', '-E', '--no-color', ...(ignore_case ? ['-i'] : []), '-e', pattern, '--', safePath(path)]), 200);
+      const skip = include_generated ? [] : NOISE.map(n => `:(exclude,glob)**/${n}`);
+      return clip(await git(['grep', '-n', '-I', '-E', '--no-color', ...(ignore_case ? ['-i'] : []), '-e', pattern, '--', safePath(path), ...skip]), 200);
     },
   },
   glob: {
-    description: 'List tracked files whose path matches a glob, e.g. src/**/*.ts or **/routes.php. Returns at most 500 paths.',
-    inputSchema: { type: 'object', properties: { pattern: { type: 'string', description: 'Glob over paths relative to the repository root; ** spans directories' } }, required: ['pattern'] },
-    run: async ({ pattern }) => {
+    description: 'List tracked files whose path matches a glob, e.g. src/**/*.ts or **/routes.php. Returns at most 500 paths. Skips lockfiles, minified, vendored and generated files unless include_generated is set.',
+    inputSchema: { type: 'object', properties: { pattern: { type: 'string', description: 'Glob over paths relative to the repository root; ** spans directories' }, include_generated: includeGenerated }, required: ['pattern'] },
+    run: async ({ pattern, include_generated = false }) => {
       if (typeof pattern !== 'string' || !pattern) throw new Error('pattern is required');
       const re = globToRegExp(pattern);
-      return clip((await git(['ls-files'])).split('\n').filter(f => f && re.test(f)).join('\n'), 500);
+      return clip((await git(['ls-files'])).split('\n').filter(f => f && re.test(f) && (include_generated || !noiseRe.some(n => n.test(f)))).join('\n'), 500);
     },
   },
 };

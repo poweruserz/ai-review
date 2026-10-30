@@ -104,10 +104,31 @@ jobs:
           # the redirection below overwrite a file outside the checkout, so they go first; the diff still shows what
           # each one pointed to, since it comes from the commits.
           find . -path ./.git -prune -o -type l -print -exec rm -f {} + | sed 's/^/removed symlink: /'
-          rm -f .ai-review.diff .ai-review.rules
+          rm -f .ai-review.diff .ai-review.skipped.diff .ai-review.rules
+          # Lockfiles, minified, vendored and generated files go to a second diff and are listed at the top of the
+          # first: they would fill the one Read the diff gets, and a bug rarely hides there. The search server
+          # below skips the same list.
+          noise=(package-lock.json yarn.lock pnpm-lock.yaml bun.lock bun.lockb Cargo.lock poetry.lock Pipfile.lock composer.lock Gemfile.lock go.sum uv.lock flake.lock packages.lock.json '*.min.js' '*.min.css' '*.map' 'vendor/**' 'node_modules/**' '*.generated.*')
+          keep=(); skip=()
+          for n in "${noise[@]}"; do keep+=(":(exclude,glob)**/$n"); skip+=(":(glob)**/$n"); done
           # Attributes come from the base commit, not the checkout: a .gitattributes line the pull request adds
           # (`auth.js -diff`) would otherwise show its own change as "Binary files differ". Needs git 2.40.
-          git --attr-source="$BASE_SHA" diff --merge-base "$BASE_SHA" "$HEAD_SHA" > .ai-review.diff
+          gdiff() { git --attr-source="$BASE_SHA" diff --merge-base "$BASE_SHA" "$HEAD_SHA" "$@"; }
+          # 8 lines of context instead of 3, so a hunk shows its function more often and costs no Read.
+          gdiff -U8 -- . "${keep[@]}" > "$RUNNER_TEMP/diff.full"
+          gdiff -- "${skip[@]}" > .ai-review.skipped.diff
+          # A file whose diff runs past 1500 lines (generated code the list misses) is clipped there, with a marker.
+          awk -v max=1500 '
+            function flush() { if (n > max) printf "… clipped: %d more lines of this file in the diff; Read the file in the checkout\n", n - max }
+            /^diff --git / { flush(); n = 0 }
+            { n++; if (n <= max) print }
+            END { flush() }' "$RUNNER_TEMP/diff.full" > "$RUNNER_TEMP/diff.body"
+          skipped="$(gdiff --numstat -- "${skip[@]}")"
+          {
+            if [ -n "$skipped" ]; then printf '===== Not in this diff (lockfiles, minified, vendored or generated; added, deleted, path), see ./.ai-review.skipped.diff =====\n%s\n=====\n\n' "$skipped"; fi
+            cat "$RUNNER_TEMP/diff.body"
+          } > .ai-review.diff
+          rm -f "$RUNNER_TEMP/diff.full" "$RUNNER_TEMP/diff.body"
           # The rules the prompt names ("## Code Review Rules" in AGENTS.md) come from the base commit too, so a
           # pull request cannot rewrite the rules it is reviewed by; its own AGENTS.md changes are reviewed as code.
           # NUL-delimited: with newline-delimited output git quotes a path with non-ASCII characters, which would
@@ -198,31 +219,38 @@ jobs:
           // Token by token, so a replacement never rewrites an earlier one: **/ spans directories, * and ? stay within one.
           const globToRegExp = (g) => new RegExp(`^${g.replace(/\*\*\/|\*\*|\*|\?|[^*?]+/g, (t) =>
             t === '**/' ? '(?:.*/)?' : t === '**' ? '.*' : t === '*' ? '[^/]*' : t === '?' ? '[^/]' : t.replace(/[.+^${}()|[\]\\]/g, '\\$&'))}$`);
+          // Lockfiles, minified, vendored and generated files, the same list the diff step keeps out of the diff: skipped
+          // unless a call asks for them, so a symbol that also lives in a bundle does not push the real hits out.
+          const NOISE = ['package-lock.json', 'yarn.lock', 'pnpm-lock.yaml', 'bun.lock', 'bun.lockb', 'Cargo.lock', 'poetry.lock', 'Pipfile.lock', 'composer.lock', 'Gemfile.lock', 'go.sum', 'uv.lock', 'flake.lock', 'packages.lock.json', '*.min.js', '*.min.css', '*.map', 'vendor/**', 'node_modules/**', '*.generated.*'];
+          const noiseRe = NOISE.map(n => globToRegExp(`**/${n}`));
+          const includeGenerated = { type: 'boolean', description: 'Also search lockfiles, minified, vendored and generated files, which are skipped by default' };
 
           const tools = {
             grep: {
-              description: 'Search file contents in the repository with an extended regular expression (git grep). Returns path:line:text, at most 200 lines.',
+              description: 'Search file contents in the repository with an extended regular expression (git grep). Returns path:line:text, at most 200 lines. Skips lockfiles, minified, vendored and generated files unless include_generated is set.',
               inputSchema: {
                 type: 'object',
                 properties: {
                   pattern: { type: 'string', description: 'Extended regular expression (POSIX ERE)' },
                   path: { type: 'string', description: 'File or directory to search, relative to the repository root; the whole repository when omitted' },
                   ignore_case: { type: 'boolean', description: 'Case-insensitive match' },
+                  include_generated: includeGenerated,
                 },
                 required: ['pattern'],
               },
-              run: async ({ pattern, path = '.', ignore_case = false }) => {
+              run: async ({ pattern, path = '.', ignore_case = false, include_generated = false }) => {
                 if (typeof pattern !== 'string' || !pattern) throw new Error('pattern is required');
-                return clip(await git(['grep', '-n', '-I', '-E', '--no-color', ...(ignore_case ? ['-i'] : []), '-e', pattern, '--', safePath(path)]), 200);
+                const skip = include_generated ? [] : NOISE.map(n => `:(exclude,glob)**/${n}`);
+                return clip(await git(['grep', '-n', '-I', '-E', '--no-color', ...(ignore_case ? ['-i'] : []), '-e', pattern, '--', safePath(path), ...skip]), 200);
               },
             },
             glob: {
-              description: 'List tracked files whose path matches a glob, e.g. src/**/*.ts or **/routes.php. Returns at most 500 paths.',
-              inputSchema: { type: 'object', properties: { pattern: { type: 'string', description: 'Glob over paths relative to the repository root; ** spans directories' } }, required: ['pattern'] },
-              run: async ({ pattern }) => {
+              description: 'List tracked files whose path matches a glob, e.g. src/**/*.ts or **/routes.php. Returns at most 500 paths. Skips lockfiles, minified, vendored and generated files unless include_generated is set.',
+              inputSchema: { type: 'object', properties: { pattern: { type: 'string', description: 'Glob over paths relative to the repository root; ** spans directories' }, include_generated: includeGenerated }, required: ['pattern'] },
+              run: async ({ pattern, include_generated = false }) => {
                 if (typeof pattern !== 'string' || !pattern) throw new Error('pattern is required');
                 const re = globToRegExp(pattern);
-                return clip((await git(['ls-files'])).split('\n').filter(f => f && re.test(f)).join('\n'), 500);
+                return clip((await git(['ls-files'])).split('\n').filter(f => f && re.test(f) && (include_generated || !noiseRe.some(n => n.test(f)))).join('\n'), 500);
               },
             },
           };
@@ -302,7 +330,11 @@ jobs:
             Read, grep (file contents, extended regex) and glob (file paths); there is no shell. When you need
             several files or searches, request them all in one message as parallel tool calls, because every
             message costs a full round trip. Every tool call also uses one of a limited number of turns, so on a
-            large diff open only the files where a change could cause one of the problems below.
+            large diff open only the files where a change could cause one of the problems below. A header at the
+            top of the diff lists files kept out of it (lockfiles, minified, vendored or generated); their diff is
+            in ./.ai-review.skipped.diff: Read it when a lockfile changed without its manifest, or when such a
+            file could carry a change made by hand. A file whose diff was clipped says so; Read it in the checkout.
+            grep and glob skip those files too, unless called with include_generated.
 
             Read ./.ai-review.context in that same message: the pull request title, description and commit
             messages, and on a later push the previous Claude review of this pull request, the rulings of the
