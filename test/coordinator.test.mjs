@@ -346,7 +346,8 @@ test('no verdict names its cause from the API error lines, so the session knows 
   assert.match(await reason(apiError('API Error: 529 {"type":"error","error":{"type":"overloaded_error"}}')), /; the API was unavailable/);
   assert.equal(await reason({ ...failed, result: 'fetch failed' }), 'no verdict: error_during_execution; the API was unavailable (overloaded or a server error): re-run now');
   // A 401 in an ordinary answer is not an API error line, and an error with no known text names none.
-  assert.equal(await reason(apiError('the endpoint returns 401 when the token is missing')), 'no verdict: error_during_execution');
+  const ordinary = { type: 'assistant', message: { model: GATE, content: [{ type: 'text', text: 'the endpoint returns 401 when the token is missing' }] } };
+  assert.equal(await reason(ordinary), 'no verdict: error_during_execution');
 });
 
 test('after a wrap-up, a first run on another model still voids the verdict', async () => {

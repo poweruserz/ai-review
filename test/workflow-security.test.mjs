@@ -43,7 +43,7 @@ test('the model runs only in the claude job, whose token can only read', () => {
 test('the review runs with Read, grep and glob only, project settings off, and the deny list in place', () => {
   const claude = job('claude');
   // The "Claude review" step alone: the wrap-up has flags of its own, which must not stand in for these.
-  const step = claude.slice(claude.indexOf('id: claude'), claude.indexOf('id: session'));
+  const step = claude.slice(claude.indexOf('- name: Claude review'), claude.indexOf('id: session'));
   assert.ok(step.includes('name: Claude review') && !step.includes('--resume'), 'the review step was not isolated');
   for (const flag of ['--restricted', '--tools Read', '--allowedTools Read,mcp__search__grep,mcp__search__glob', '--strict-mcp-config']) assert.match(step, new RegExp(`^\\s+${flag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'm'), flag);
   const denied = /--disallowedTools "([^"]+)"/.exec(step)[1].split(',');
