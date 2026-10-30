@@ -12,6 +12,10 @@ mkdirSync(join(repo, 'src', 'deep'), { recursive: true });
 writeFileSync(join(repo, 'src', 'deep', 'users.js'), 'function findUser(users, id) {\n  return users.find(u => u.id === id);\n}\n');
 writeFileSync(join(repo, 'src', 'hello.txt'), 'hello\n');
 writeFileSync(join(repo, 'README.md'), '# Not matched by code globs\n');
+// Skipped by default, like the diff step skips them: a lockfile and a vendored copy that both mention the symbol.
+writeFileSync(join(repo, 'package-lock.json'), '{"findUser": 1}\n');
+mkdirSync(join(repo, 'vendor'));
+writeFileSync(join(repo, 'vendor', 'v.js'), 'function findUser() {}\n');
 const git = (...a) => execFileSync('git', a, { cwd: repo, stdio: 'ignore' });
 git('init', '-q', '.'); git('add', '-A'); git('-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '-m', 'init');
 
@@ -54,6 +58,14 @@ test('glob spans directories with ** and stays within one with *', async () => {
   assert.equal(text(await call('tools/call', { name: 'glob', arguments: { pattern: 'src/*.txt' } })), 'src/hello.txt');
   assert.equal(text(await call('tools/call', { name: 'glob', arguments: { pattern: '*.js' } })), 'no matches');
   assert.equal(text(await call('tools/call', { name: 'glob', arguments: { pattern: 'src/**' } })), 'src/deep/users.js\nsrc/hello.txt');
+});
+
+test('lockfiles and vendored files are skipped unless include_generated is set', async () => {
+  assert.equal(text(await call('tools/call', { name: 'grep', arguments: { pattern: 'findUser', include_generated: true } })),
+    'package-lock.json:1:{"findUser": 1}\nsrc/deep/users.js:1:function findUser(users, id) {\nvendor/v.js:1:function findUser() {}');
+  assert.equal(text(await call('tools/call', { name: 'grep', arguments: { pattern: 'findUser', path: 'vendor' } })), 'no matches');
+  assert.equal(text(await call('tools/call', { name: 'glob', arguments: { pattern: '**/*.js', include_generated: true } })), 'src/deep/users.js\nvendor/v.js');
+  assert.equal(text(await call('tools/call', { name: 'glob', arguments: { pattern: '**/*.json' } })), 'no matches');
 });
 
 test('a bad regex is an error, not "no matches"; a path with nothing under it is "no matches"', async () => {
