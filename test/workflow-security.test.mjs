@@ -34,7 +34,8 @@ test('the model runs only in the claude job, whose token can only read', () => {
   const claude = job('claude');
   assert.equal((claude.match(/^\s+(?:- )?uses: anthropics\/claude-code-action@/gm) ?? []).length, 2, 'the review and its wrap-up');
   // Every job, by enumeration, so one added under a new name is looked at too.
-  const jobs = lines.slice(lines.indexOf('jobs:') + 1).filter(l => /^  [\w-]+:$/.test(l)).map(l => l.trim().slice(0, -1));
+  // Not anchored at the end: a key line may carry a trailing comment, the house style.
+  const jobs = lines.slice(lines.indexOf('jobs:') + 1).map(l => /^  ([\w-]+):/.exec(l)?.[1]).filter(Boolean);
   assert.deepEqual(jobs, ['claude', 'post', 'coordinate']);
   for (const name of jobs.filter(n => n !== 'claude')) assert.doesNotMatch(job(name), /claude-code-action|CLAUDE_CODE_OAUTH_TOKEN/, name);
   const permissions = /^    permissions:\n((?:      .*\n)+)/m.exec(claude)[1].split('\n').filter(Boolean).map(l => l.trim().replace(/\s*#.*/, ''));
