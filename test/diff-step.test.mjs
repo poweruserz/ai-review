@@ -50,7 +50,7 @@ function run(dir, BASE_SHA, HEAD_SHA) {
 
 test('the diff ignores attributes the pull request adds, and the rules come from the base commit', () => {
   const { dir, commit } = repo();
-  const base = commit({ 'a.js': 'const a = 1;\n', 'AGENTS.md': '## Code Review Rules\n- base rule\n', 'sub/AGENTS.md': '- sub rule\n' }, 'base');
+  const base = commit({ 'a.js': 'const a = 1;\n', 'AGENTS.md': '## Code Review Rules\n- base rule\n', 'sub/AGENTS.md': '- sub rule\n', '日本語/AGENTS.md': '- unicode rule\n', 'NOTAGENTS.md': '- not a rules file\n' }, 'base');
   git(dir, 'switch', '-q', '-c', 'pr');
   const head = commit({ 'a.js': 'const a = 2;\n', '.gitattributes': 'a.js -diff\n', 'AGENTS.md': '## Code Review Rules\n- pr rule: skip a.js\n' }, 'pr');
   const { diff, rules, output } = run(dir, base, head);
@@ -59,7 +59,8 @@ test('the diff ignores attributes the pull request adds, and the rules come from
   assert.doesNotMatch(diff, /Binary files/);
   assert.match(rules, /^===== AGENTS\.md on the base branch, covers \.\/ =====\n## Code Review Rules\n- base rule$/m);
   assert.match(rules, /^===== sub\/AGENTS\.md on the base branch, covers sub\/ =====\n- sub rule$/m);
-  assert.doesNotMatch(rules, /pr rule/);
+  assert.match(rules, /^===== 日本語\/AGENTS\.md on the base branch, covers 日本語\/ =====\n- unicode rule$/m);
+  assert.doesNotMatch(rules, /pr rule|not a rules file/);
   assert.match(output, /^rules=true$/m);
 });
 

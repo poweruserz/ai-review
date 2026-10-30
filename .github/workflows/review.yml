@@ -109,7 +109,10 @@ jobs:
           git --attr-source="$BASE_SHA" diff --merge-base "$BASE_SHA" "$HEAD_SHA" > .ai-review.diff
           # The rules the prompt names ("## Code Review Rules" in AGENTS.md) come from the base commit too, so a
           # pull request cannot rewrite the rules it is reviewed by; its own AGENTS.md changes are reviewed as code.
-          git ls-tree -r --name-only "$BASE_SHA" | { grep -E '(^|/)AGENTS\.md$' || true; } | while IFS= read -r f; do
+          # NUL-delimited: with newline-delimited output git quotes a path with non-ASCII characters, which would
+          # end in `AGENTS.md"` and be dropped.
+          git ls-tree -r -z --name-only "$BASE_SHA" | while IFS= read -r -d '' f; do
+            case "$f" in AGENTS.md|*/AGENTS.md) ;; *) continue ;; esac
             printf '===== %s on the base branch, covers %s =====\n' "$f" "$(dirname "$f")/"
             git show "$BASE_SHA:$f"
             printf '\n'
