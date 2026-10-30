@@ -117,18 +117,22 @@ jobs:
           # 8 lines of context instead of 3, so a hunk shows its function more often and costs no Read.
           gdiff -U8 -- . "${keep[@]}" > "$RUNNER_TEMP/diff.full"
           gdiff -- "${skip[@]}" > .ai-review.skipped.diff
-          # A file whose diff runs past 1500 lines (generated code the list misses) is clipped there, with a marker.
-          awk -v max=1500 '
-            function flush() { if (n > max) printf "… clipped: %d more lines of this file in the diff; Read the file in the checkout\n", n - max }
-            /^diff --git / { flush(); n = 0 }
-            { n++; if (n <= max) print }
+          # A file whose diff runs past 1500 lines (generated code the list misses) is clipped there, with a marker,
+          # and its whole diff goes to the second file: the checkout shows neither removed lines nor a deleted file.
+          : > "$RUNNER_TEMP/diff.over"
+          # The path goes through the environment: awk reads escapes in a -v value, and a Windows path has backslashes.
+          OVER="$RUNNER_TEMP/diff.over" awk -v max=1500 '
+            function flush(  i) { if (n > max) { printf "… clipped: %d more lines of this file in the diff; its whole diff is in ./.ai-review.skipped.diff\n", n - max; for (i = 1; i <= n; i++) print buf[i] > (ENVIRON["OVER"]) }; n = 0; delete buf }
+            /^diff --git / { flush() }
+            { n++; buf[n] = $0; if (n <= max) print }
             END { flush() }' "$RUNNER_TEMP/diff.full" > "$RUNNER_TEMP/diff.body"
           skipped="$(gdiff --numstat -- "${skip[@]}")"
           {
             if [ -n "$skipped" ]; then printf '===== Not in this diff (lockfiles, minified, vendored or generated; added, deleted, path), see ./.ai-review.skipped.diff =====\n%s\n=====\n\n' "$skipped"; fi
             cat "$RUNNER_TEMP/diff.body"
           } > .ai-review.diff
-          rm -f "$RUNNER_TEMP/diff.full" "$RUNNER_TEMP/diff.body"
+          if [ -s "$RUNNER_TEMP/diff.over" ]; then { printf '===== The whole diff of each file clipped in ./.ai-review.diff =====\n'; cat "$RUNNER_TEMP/diff.over"; } >> .ai-review.skipped.diff; fi
+          rm -f "$RUNNER_TEMP/diff.full" "$RUNNER_TEMP/diff.body" "$RUNNER_TEMP/diff.over"
           # The rules the prompt names ("## Code Review Rules" in AGENTS.md) come from the base commit too, so a
           # pull request cannot rewrite the rules it is reviewed by; its own AGENTS.md changes are reviewed as code.
           # NUL-delimited: with newline-delimited output git quotes a path with non-ASCII characters, which would
@@ -333,7 +337,8 @@ jobs:
             large diff open only the files where a change could cause one of the problems below. A header at the
             top of the diff lists files kept out of it (lockfiles, minified, vendored or generated); their diff is
             in ./.ai-review.skipped.diff: Read it when a lockfile changed without its manifest, or when such a
-            file could carry a change made by hand. A file whose diff was clipped says so; Read it in the checkout.
+            file could carry a change made by hand. A file whose diff was clipped says so, and its whole diff is
+            in that same file.
             grep and glob skip those files too, unless called with include_generated.
 
             Read ./.ai-review.context in that same message: the pull request title, description and commit

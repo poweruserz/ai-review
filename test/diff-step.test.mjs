@@ -65,15 +65,19 @@ test('lockfiles, minified, vendored and generated files leave the diff for a sec
 test('a file whose diff runs past 1500 lines is clipped with a marker, and hunks carry 8 lines of context', () => {
   const { dir, commit } = repo();
   const thirty = (mid) => Array.from({ length: 30 }, (_, i) => (i === 14 ? mid : `line ${i + 1}`)).join('\n') + '\n';
-  const base = commit({ 'a.js': thirty('old'), 'big.txt': 'small\n' }, 'base');
+  const rows = Array.from({ length: 1700 }, (_, i) => `row ${i + 1}`).join('\n');
+  const base = commit({ 'a.js': thirty('old'), 'big.js': `${rows}\nrequireAuthorization();\n` }, 'base');
   git(dir, 'switch', '-q', '-c', 'pr');
-  const head = commit({ 'a.js': thirty('new'), 'big.txt': Array.from({ length: 2000 }, (_, i) => `row ${i + 1}`).join('\n') + '\n' }, 'pr');
-  const { diff } = run(dir, base, head);
+  const head = commit({ 'a.js': thirty('new'), 'big.js': 'handleRequest();\n' }, 'pr');
+  const { diff, skipped } = run(dir, base, head);
   assert.match(diff, /^@@ -7,17 \+7,17 @@/m);
   assert.doesNotMatch(diff, /^===== Not in this diff/);
-  // 5 header lines, the removed line and 1494 added rows make the 1500 kept; 506 of the 2006 are clipped.
-  assert.match(diff, /^\+row 1494\n… clipped: 506 more lines of this file in the diff; Read the file in the checkout\n$/m);
-  assert.doesNotMatch(diff, /row 1495|row 2000/);
+  // 5 header lines and 1495 removed rows make the 1500 kept; the other 207 of 1707 are clipped, the removed check
+  // among them, so the whole diff of the file has to be in the second file.
+  assert.match(diff, /^-row 1495\n… clipped: 207 more lines of this file in the diff; its whole diff is in \.\/\.ai-review\.skipped\.diff\n$/m);
+  assert.doesNotMatch(diff, /row 1496|requireAuthorization/);
+  assert.match(skipped, /^===== The whole diff of each file clipped in \.\/\.ai-review\.diff =====\ndiff --git a\/big\.js b\/big\.js\n/m);
+  assert.match(skipped, /^-requireAuthorization\(\);\n\+handleRequest\(\);\n$/m);
 });
 
 test('the diff ignores attributes the pull request adds, and the rules come from the base commit', () => {
