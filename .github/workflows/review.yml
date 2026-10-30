@@ -130,6 +130,7 @@ jobs:
         if: env.HAS_TOKEN == 'true'
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
+          retries: 3
           script: |
             const fs = require('fs');
             const { owner, repo } = context.repo;
@@ -507,7 +508,9 @@ jobs:
   post:
     name: Post the Claude review
     needs: claude
-    if: always() && needs.claude.result != 'skipped' && needs.claude.result != 'cancelled'
+    # Runs after a cancelled review job too: a job timeout and a lost runner both end as "cancelled", and without
+    # a comment the coordinator would wait for Claude for good. The step tells those apart from a newer push.
+    if: always() && needs.claude.result != 'skipped'
     runs-on: ${{ github.event.repository.private && fromJSON('["self-hosted","dreamfyre-review"]') || 'ubuntu-latest' }}
     timeout-minutes: 5
     permissions:
@@ -515,6 +518,7 @@ jobs:
       pull-requests: write # GITHUB_TOKEN needs it to comment on a pull request; no model runs in this job
     env:
       HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      CLAUDE_RESULT: ${{ needs.claude.result }}
       VERDICT: ${{ needs.claude.outputs.verdict || 'unavailable' }}
       TEXT: ${{ needs.claude.outputs.text }}
       REASON: ${{ needs.claude.outputs.reason || 'the job did not reach the verdict step' }}
@@ -523,24 +527,39 @@ jobs:
         id: post
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
+          retries: 3
           script: |
             const head = process.env.HEAD_SHA;
-            const verdict = process.env.VERDICT;
-            const text = process.env.TEXT;
-            // Fenced, so nothing the model wrote renders: no image, link or HTML can carry data off the platform.
-            // The fence outruns any backtick run in the text, so the text cannot close it.
-            const fence = '`'.repeat(Math.max(3, ...(text.match(/`+/g) ?? []).map(run => run.length + 1)));
-            const body = [
-              `<!-- ai-review:claude sha=${head} verdict=${verdict} -->`,
-              '### Claude review',
-              `Commit \`${head.slice(0, 7)}\``,
-              '',
-              verdict === 'unavailable'
-                ? `_Claude gave no verdict for this commit (${process.env.REASON}). The status stays at error until a re-run of this workflow succeeds._`
-                : `${fence}text\n${text}\n${fence}`,
-            ].join('\n');
             const { owner, repo } = context.repo;
             const issue_number = context.payload.pull_request.number;
+            let verdict = process.env.VERDICT, text = process.env.TEXT, reason = process.env.REASON;
+            // Cancelled while this head is still the pull request's head: a timeout or a lost runner, so "no
+            // verdict" is posted and the status becomes an error. Cancelled by a newer push: that push's run posts.
+            if (process.env.CLAUDE_RESULT === 'cancelled') {
+              const { data: pr } = await github.rest.pulls.get({ owner, repo, pull_number: issue_number });
+              if (pr.head.sha !== head) return;
+              verdict = 'unavailable';
+              reason = 'the review job was cancelled before a verdict (a job timeout, or a runner that went away): re-run the workflow';
+            }
+            const build = (text) => {
+              // Fenced, so nothing the model wrote renders: no image, link or HTML can carry data off the platform.
+              // The fence outruns any backtick run in the text, so the text cannot close it.
+              const fence = '`'.repeat(Math.max(3, ...(text.match(/`+/g) ?? []).map(run => run.length + 1)));
+              return [
+                `<!-- ai-review:claude sha=${head} verdict=${verdict} -->`,
+                '### Claude review',
+                `Commit \`${head.slice(0, 7)}\``,
+                '',
+                verdict === 'unavailable'
+                  ? `_Claude gave no verdict for this commit (${reason}). The status stays at error until a re-run of this workflow succeeds._`
+                  : `${fence}text\n${text}\n${fence}`,
+              ].join('\n');
+            };
+            // GitHub refuses a body over 65536 characters, and a refused comment would leave the status pending for
+            // good: the text is cut to fit, and the marker and the fence stay.
+            let body = build(text);
+            const max = 65000;
+            if (body.length > max) body = build(`${text.slice(0, text.length - (body.length - max) - 80)}\n… cut here: the comment limit was reached`);
             const comments = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number, per_page: 100 });
             const previous = comments.find(c => c.user.login === 'github-actions[bot]' && c.body.startsWith('<!-- ai-review:claude '));
             if (previous) await github.rest.issues.updateComment({ owner, repo, comment_id: previous.id, body });
@@ -578,6 +597,7 @@ jobs:
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           github-token: ${{ secrets.CODEX_TRIGGER_PAT }}
+          retries: 3
           script: core.setOutput('login', (await github.rest.users.getAuthenticated()).data.login);
 
       - name: Decide
@@ -588,6 +608,7 @@ jobs:
           CODEX_FIXES: ${{ inputs.codex-fixes }}
           ASKER: ${{ steps.asker.outputs.login }}
         with:
+          retries: 3 # a 5xx or a dropped connection here would leave a stale status, and nothing re-runs this job by itself
           script: |
             const { owner, repo } = context.repo;
             const pull_number = Number(process.env.PR_NUMBER);
@@ -631,6 +652,7 @@ jobs:
               openCodexThreads += page.nodes.filter(t => !t.isResolved && t.comments.nodes[0]?.author?.login === 'chatgpt-codex-connector').length;
               if (!page.pageInfo.hasNextPage) break;
               after = page.pageInfo.endCursor;
+              if (!after) throw new Error('a reviewThreads page claims a next page but names no cursor'); // never page 1 again until the timeout
             }
             const security = codex?.security_review;
             // Code review findings already mean a fix and a new push, so they do not wait for a security review still
@@ -681,7 +703,13 @@ jobs:
             }
             if (process.env.CODEX_FIXES !== 'true') {
               // The session must not treat an all-rejected head as clean while this review can still add findings.
-              await status('failure', `findings to rule on from ${sources}${codexDone ? '' : '; Codex security review still running'}`);
+              // A ruling that does not count is named with why, so the session knows what to wait for or redo.
+              const why = ruling && [
+                !codexDone && 'Codex security review still running',
+                openCodexThreads > 0 && `${openCodexThreads} Codex thread${openCodexThreads > 1 ? 's' : ''} open`,
+                [claude, codexComment].some(c => c && c.updated_at >= ruling.created_at) && 'older than the latest review result',
+              ].filter(Boolean);
+              await status('failure', `findings to rule on from ${sources}${why?.length ? `; ruling not counted: ${why.join(', ')}` : codexDone ? '' : '; Codex security review still running'}`);
               return;
             }
             const round = asks.length + 1;
@@ -727,5 +755,6 @@ jobs:
           BODY: ${{ steps.decide.outputs.body }}
         with:
           github-token: ${{ secrets.CODEX_TRIGGER_PAT }}
+          retries: 3
           script: |
             await github.rest.issues.createComment({ ...context.repo, issue_number: Number(process.env.PR_NUMBER), body: process.env.BODY });
