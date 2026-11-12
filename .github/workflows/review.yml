@@ -327,9 +327,9 @@ jobs:
         timeout-minutes: 45
         # A release's commit, which must not go stale: the one pinned until 2026-11-12 installed Claude Code 2.1.303,
         # which did not know Mythos 5.2, cut a reply at 32,000 output tokens and compacted the context early. So
-        # .github/dependabot.yml in poweruserz/ai-review opens a pull request for each new release and the owner
-        # merges it. Not the tag v1: that would run each new release next to the token in every enrolled repository
-        # before the owner had agreed to it.
+        # .github/dependabot.yml in poweruserz/ai-review proposes each new release, and its change is merged there
+        # through a reviewed pull request (see the README). Not the tag v1: that would run each new release next to
+        # the token in every enrolled repository before anyone had looked at it.
         uses: anthropics/claude-code-action@4fa93a88de49bbef68b10eb15aabedf28ca0e1ed # v1.0.271
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Re-runs the coordinator on a pull request's head, so it reads Codex, GLM, the threads and any ruling afresh.
+# Re-runs the coordinator on a pull request's head, so it reads Codex, Claude, the threads and any ruling afresh.
 # Needed after a ruling, because resolving threads and the owner's comments wake nothing, and on an enrolment
 # pull request, whose issue_comment wake-ups start only once the caller is on the default branch.
 # The re-run uses review.yml as it was at the run's first attempt (GitHub keeps that SHA for a single job).
