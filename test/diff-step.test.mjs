@@ -3,7 +3,7 @@
 // Usage: node --test
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, writeFileSync, mkdtempSync, mkdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdtempSync, mkdirSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
@@ -105,4 +105,39 @@ test('no AGENTS.md on the base branch leaves an empty rules file', () => {
   assert.match(diff, /^\+const a = 2;$/m);
   assert.equal(rules, '');
   assert.match(output, /^rules=false$/m);
+});
+
+test('a diff past 40,000 bytes continues in numbered parts: whole files where they fit, a larger file cut with its header repeated', () => {
+  const { dir, commit } = repo();
+  const base = commit({ 'README.md': 'x\n' }, 'base');
+  git(dir, 'switch', '-q', '-c', 'pr');
+  const text = (tag, n, width) => Array.from({ length: n }, (_, i) => `${tag} ${i} ${'x'.repeat(width)}`).join('\n') + '\n';
+  // About 14 KB each for a.js and b.js, 99 KB for big.js, and a word of Turkish, which is two bytes a letter.
+  const head = commit({ 'a.js': text('a', 300, 40), 'b.js': text('b', 300, 40), 'big.js': text('big', 1400, 60), 'son.js': 'çğış\n' }, 'pr');
+  // A part left by an earlier run on a persistent runner, or committed by the pull request, must not survive.
+  writeFileSync(join(dir, '.ai-review.diff.9'), 'stale\n');
+  const { diff, output } = run(dir, base, head);
+  const count = Number(/^parts=(\d+)$/m.exec(output)[1]);
+  const parts = [diff, ...Array.from({ length: count - 1 }, (_, i) => readFileSync(join(dir, `.ai-review.diff.${i + 2}`), 'utf8'))];
+  assert.equal(count, 4);
+  assert.match(output, /^more=\.\/\.ai-review\.diff\.2, \.\/\.ai-review\.diff\.3, \.\/\.ai-review\.diff\.4$/m);
+  assert.ok(!existsSync(join(dir, '.ai-review.diff.9')));
+  for (const p of parts) assert.ok(Buffer.byteLength(p) <= 40000, `a part of ${Buffer.byteLength(p)} bytes`);
+  // a.js and b.js fit one part together and are not cut; big.js does not fit what is left, so it starts the next.
+  assert.deepEqual(parts.map(p => p.match(/^diff --git a\/(\S+)/gm).map(l => l.slice(13))), [['a.js', 'b.js'], ['big.js'], ['big.js'], ['big.js', 'son.js']]);
+  assert.match(parts[1], /^diff --git a\/big\.js b\/big\.js\n/);
+  for (const p of parts.slice(2)) assert.match(p, /^… the diff of this file continues from the previous part\ndiff --git a\/big\.js b\/big\.js\n\+big \d+ /);
+  // Nothing is lost or repeated: every added line is there once, in order.
+  assert.deepEqual(parts.join('').match(/^\+big \d+ /gm).map(l => Number(l.split(' ')[1])), Array.from({ length: 1400 }, (_, i) => i));
+  assert.match(parts[3], /^\+çğış$/m);
+});
+
+test('a diff under 40,000 bytes stays one file', () => {
+  const { dir, commit } = repo();
+  const base = commit({ 'a.js': 'const a = 1;\n' }, 'base');
+  git(dir, 'switch', '-q', '-c', 'pr');
+  const head = commit({ 'a.js': 'const a = 2;\n' }, 'pr');
+  const { output } = run(dir, base, head);
+  assert.match(output, /^parts=1\nmore=$/m);
+  assert.ok(!existsSync(join(dir, '.ai-review.diff.2')));
 });

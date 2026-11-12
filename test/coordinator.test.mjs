@@ -294,10 +294,10 @@ const GATE = 'claude-mythos-5-2';
 const answer = (model = GATE) => ({ type: 'assistant', message: { model, content: [{ type: 'text', text: '…' }] } });
 const done = (text, models = [GATE]) => ({ type: 'result', subtype: 'success', is_error: false, result: text, modelUsage: Object.fromEntries(models.map(m => [m, {}])) });
 const gateInit = (servers = [{ name: 'search', status: 'connected' }]) => ({ type: 'system', subtype: 'init', model: GATE, mcp_servers: servers });
-async function verdict(messages, { token = 'true', first, files = {} } = {}) {
+async function verdict(messages, { token = 'true', first, files = {}, parts = '' } = {}) {
   const out = {}, warnings = [], info = [];
-  Object.assign(process.env, { HAS_TOKEN: token, MODEL: GATE, EXECUTION_FILE: 'last', FIRST_FILE: first ? 'first' : '' });
-  // The execution files, plus the checkout the anchor check reads.
+  Object.assign(process.env, { HAS_TOKEN: token, MODEL: GATE, EXECUTION_FILE: 'last', FIRST_FILE: first ? 'first' : '', GITHUB_WORKSPACE: '/w', DIFF_PARTS: parts });
+  // The execution files, plus the checkout the anchor check reads and the diff files the read check counts.
   const fs = {
     readFileSync: (f) => {
       if (f === 'first' || f === 'last') { const m = f === 'first' ? first : messages; if (m === undefined) throw new Error('ENOENT'); return JSON.stringify(m); }
@@ -335,15 +335,74 @@ test('a finding is anchored to its quoted line: kept, moved, or marked unverifie
   assert.equal((await r(plain))[1], plain);
 });
 
+// A Read as the record holds it: the call, and a result whose lines carry their numbers, as Read prints them.
+const read = (id, path, input = {}) => ({ type: 'assistant', message: { model: GATE, content: [{ type: 'tool_use', id, name: 'Read', input: { file_path: path, ...input } }] } });
+const result = (id, content) => ({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: id, is_error: content === false, content: content === false ? 'File content exceeds maximum allowed tokens' : content }] } });
+const numbered = (from, to) => Array.from({ length: to - from + 1 }, (_, i) => `${from + i}\tline`).join('\n');
+// A diff of the named files, each with that many lines.
+const diffOf = (...files) => files.map(([name, n]) => [`diff --git a/${name} b/${name}`, ...Array(n - 1).fill('+x')].join('\n')).join('\n') + '\n';
+
 test('a record with Reads but no successful Read of the diff turns CLEAN into a finding; one with no Read at all proves nothing', async () => {
-  const read = (id, path) => ({ type: 'assistant', message: { model: GATE, content: [{ type: 'tool_use', id, name: 'Read', input: { file_path: path } }] } });
-  const result = (id, ok) => ({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: id, is_error: !ok, content: ok ? 'text' : 'File content exceeds maximum allowed tokens' }] } });
-  const unread = await verdict([gateInit(), read('t1', '/w/.ai-review.diff'), result('t1', false), read('t2', '/w/a.js'), result('t2', true), answer(), done('VERDICT: CLEAN')]);
+  const files = { '.ai-review.diff': diffOf(['a.js', 3]) };
+  const unread = await verdict([gateInit(), read('t1', '/w/.ai-review.diff'), result('t1', false), read('t2', '/w/a.js'), result('t2', '1\tx'), answer(), done('VERDICT: CLEAN')], { files });
   assert.equal(unread.verdict, 'findings');
   assert.equal(unread.text, 'VERDICT: FINDINGS\n1. [P1] .ai-review.diff — not reviewed: the execution record shows no successful Read of the diff — review the pull request yourself before merging');
-  const retried = await verdict([gateInit(), read('t1', '/w/.ai-review.diff'), result('t1', false), read('t2', '/w/.ai-review.diff'), result('t2', true), answer(), done('VERDICT: CLEAN')]);
+  const retried = await verdict([gateInit(), read('t1', '/w/.ai-review.diff'), result('t1', false), read('t2', '/w/.ai-review.diff'), result('t2', numbered(1, 4)), answer(), done('VERDICT: CLEAN')], { files });
   assert.equal(retried.verdict, 'clean');
-  assert.equal((await verdict([gateInit(), answer(), done('VERDICT: CLEAN')])).verdict, 'clean');
+  assert.equal((await verdict([gateInit(), answer(), done('VERDICT: CLEAN')], { files })).verdict, 'clean');
+  // A diff file that is not there cannot have been read.
+  assert.equal((await verdict([gateInit(), read('t1', '/w/.ai-review.diff'), result('t1', numbered(1, 4)), answer(), done('VERDICT: CLEAN')])).verdict, 'findings');
+});
+
+test('every line of the diff must have been returned by a Read: the files of the lines that were not become a finding', async () => {
+  // 10 lines: a.js on 1-4, b.js on 5-7, c.js on 8-10.
+  const files = { '.ai-review.diff': diffOf(['a.js', 4], ['b.js', 3], ['c.js', 3]) };
+  const run = (...reads) => verdict([gateInit(), ...reads.flatMap(([input, content], i) => [read(`t${i}`, '/w/.ai-review.diff', input), result(`t${i}`, content)]), answer(), done('VERDICT: CLEAN\nNot reviewed: none')], { files });
+  // The top of the diff and its end, as one review of a large diff did: the file in between is named.
+  const gap = await run([{}, numbered(1, 4)], [{ offset: 8, limit: 3 }, numbered(8, 10)]);
+  assert.equal(gap.verdict, 'findings');
+  assert.equal(gap.text, 'VERDICT: FINDINGS\n1. [P1] b.js — not reviewed: the execution record shows no Read of 3 of the 10 lines of the diff, in these files — review them yourself before merging');
+  // Pages that cover it together are a whole read, in any order, and so is a result that came as text blocks.
+  assert.equal((await run([{ offset: 5 }, numbered(5, 11)], [{}, numbered(1, 4)])).verdict, 'clean');
+  assert.equal((await run([{}, [{ type: 'text', text: numbered(1, 10) }]])).verdict, 'clean');
+  // The numbers in the result count, not the limit that was asked for: a Read cut short covers what it returned.
+  assert.equal((await run([{ limit: 2000 }, numbered(1, 7)])).text.split(' — ')[0], 'VERDICT: FINDINGS\n1. [P1] c.js');
+  // A result without line numbers counts from the offset it asked for, and no further than its limit.
+  const plain = Array(10).fill('x').join('\n');
+  assert.equal((await run([{}, plain])).verdict, 'clean');
+  assert.equal((await run([{ limit: 4 }, plain])).verdict, 'findings');
+  // A finding of the model's own stays, and the unread files follow it.
+  const both = await verdict([gateInit(), read('t1', '/w/.ai-review.diff'), result('t1', numbered(1, 7)), answer(), done('VERDICT: FINDINGS\n1. [P1] a.js:9 — x — y → z — w\nNot reviewed: none')], { files });
+  assert.deepEqual(both.text.split('\n').map(l => l.split(' — ')[0]), ['VERDICT: FINDINGS', '1. [P1] a.js:9', '2. [P1] c.js']);
+});
+
+test('a diff in several parts is read only when every part is', async () => {
+  const files = { '.ai-review.diff': diffOf(['a.js', 2]), '.ai-review.diff.2': diffOf(['b.js', 2]), '.ai-review.diff.3': `… the diff of this file continues from the previous part\n${diffOf(['b.js', 2], ['c.js', 2])}` };
+  const run = (reads, parts = '3') => verdict([gateInit(), ...reads.flatMap(([path, content], i) => [read(`t${i}`, path), result(`t${i}`, content)]), answer(), done('VERDICT: CLEAN')], { files, parts });
+  const all = [['/w/.ai-review.diff', numbered(1, 2)], ['/w/.ai-review.diff.2', numbered(1, 2)], ['/w/.ai-review.diff.3', numbered(1, 5)]];
+  assert.equal((await run(all)).verdict, 'clean');
+  const two = await run(all.slice(0, 2));
+  assert.equal(two.text, 'VERDICT: FINDINGS\n1. [P1] b.js, c.js — not reviewed: the execution record shows no Read of 5 of the 9 lines of the diff, in these files — review them yourself before merging');
+  // A file of the same name elsewhere in the tree, which a pull request can commit, is not a part of the diff.
+  assert.equal((await run([...all.slice(0, 2), ['/w/sub/.ai-review.diff.3', numbered(1, 5)]])).verdict, 'findings');
+  // Parts the diff step did not write are not looked for.
+  assert.equal((await run(all.slice(0, 1), '1')).verdict, 'clean');
+});
+
+test('a successful Read outside the workspace gives no verdict, and the answer is not printed', async () => {
+  const files = { '.ai-review.diff': diffOf(['a.js', 2]) };
+  const run = (path, content = '1\tsecret') => verdict([gateInit(), read('t1', '/w/.ai-review.diff'), result('t1', numbered(1, 2)), read('t2', path), result('t2', content), answer(), done('VERDICT: CLEAN')], { files });
+  const out = await run('/home/gha-review/runners/other/_work/other/other/config.php');
+  assert.equal(out.verdict, 'unavailable');
+  assert.equal(out.reason, 'the review read a file outside the repository: see the workflow run');
+  assert.equal(out.text, '');
+  assert.ok(!out.info.some(l => l.includes('VERDICT')), 'the answer may carry what was read');
+  assert.deepEqual(out.warnings.slice(-1), ['Read outside the workspace: /home/gha-review/runners/other/_work/other/other/config.php']);
+  // Climbing out with dot-dot is outside too; a path inside, absolute or relative, is not, nor is a refused Read.
+  assert.equal((await run('/w/src/../../other/a.js')).verdict, 'unavailable');
+  assert.equal((await run('/w/src/../a.js')).verdict, 'clean');
+  assert.equal((await run('src/a.js')).verdict, 'clean');
+  assert.equal((await run('/etc/passwd', false)).verdict, 'clean');
 });
 
 test('no verdict names its cause from the API error lines, so the session knows whether to renew, wait or re-run', async () => {

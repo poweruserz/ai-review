@@ -106,7 +106,7 @@ jobs:
           # the redirection below overwrite a file outside the checkout, so they go first; the diff still shows what
           # each one pointed to, since it comes from the commits.
           find . -path ./.git -prune -o -type l -print -exec rm -f {} + | sed 's/^/removed symlink: /'
-          rm -f .ai-review.diff .ai-review.skipped.diff .ai-review.rules
+          rm -f .ai-review.diff .ai-review.diff.* .ai-review.skipped.diff .ai-review.rules
           # Lockfiles, minified, vendored and generated files go to a second diff and are listed at the top of the
           # first: they would fill the one Read the diff gets, and a bug rarely hides there. The search server
           # below skips the same list.
@@ -132,9 +132,33 @@ jobs:
           {
             if [ -n "$skipped" ]; then printf '===== Not in this diff (lockfiles, minified, vendored or generated; added, deleted, path), see ./.ai-review.skipped.diff =====\n%s\n=====\n\n' "$skipped"; fi
             cat "$RUNNER_TEMP/diff.body"
-          } > .ai-review.diff
+          } > "$RUNNER_TEMP/diff.whole"
+          # One Read returns a file whole only up to a size: 25,000 tokens at worst, more while the context has room.
+          # Measured on a diff of 480 KB: the first Read returned 723 of its 8,553 lines, the rest took 8 to 13 Reads
+          # with offsets, and one review of four left 5,056 lines unread. So a diff past 40,000 bytes continues in
+          # ./.ai-review.diff.2, .3 and so on, each small enough for one Read. A file's diff stays in one part when
+          # it fits one; a larger one is cut where a part is full, and its header is repeated. The extraction checks
+          # against the execution record that every line of every part was read.
+          : > .ai-review.diff
+          parts="$(LC_ALL=C awk -v max=40000 '
+            function start() { if (out != "") close(out); part++; out = (part == 1 ? ".ai-review.diff" : ".ai-review.diff." part); size = 0 }
+            function put(line) { print line > out; size += length(line) + 1 }
+            function flush(  i) {
+              if (size && size + bytes > max) start()
+              for (i = 1; i <= n; i++) {
+                if (size && size + length(buf[i]) + 1 > max) { start(); if (head != "") { put("… the diff of this file continues from the previous part"); put(head) } }
+                put(buf[i])
+              }
+              n = 0; bytes = 0; delete buf
+            }
+            BEGIN { start() }
+            /^diff --git / { flush(); head = $0 }
+            { buf[++n] = $0; bytes += length($0) + 1 }
+            END { flush(); print part }' "$RUNNER_TEMP/diff.whole")"
+          more=""; for ((k = 2; k <= parts; k++)); do more+="${more:+, }./.ai-review.diff.$k"; done
+          { echo "parts=$parts"; echo "more=$more"; } >> "$GITHUB_OUTPUT"
           if [ -s "$RUNNER_TEMP/diff.over" ]; then { printf '===== The whole diff of each file clipped in ./.ai-review.diff =====\n'; cat "$RUNNER_TEMP/diff.over"; } >> .ai-review.skipped.diff; fi
-          rm -f "$RUNNER_TEMP/diff.full" "$RUNNER_TEMP/diff.body" "$RUNNER_TEMP/diff.over"
+          rm -f "$RUNNER_TEMP/diff.full" "$RUNNER_TEMP/diff.body" "$RUNNER_TEMP/diff.over" "$RUNNER_TEMP/diff.whole"
           # The rules the prompt names ("## Code Review Rules" in AGENTS.md) come from the base commit too, so a
           # pull request cannot rewrite the rules it is reviewed by; its own AGENTS.md changes are reviewed as code.
           # NUL-delimited: with newline-delimited output git quotes a path with non-ASCII characters, which would
@@ -336,10 +360,10 @@ jobs:
             --max-turns ${{ inputs.glm-max-turns || inputs.max-turns }}
           prompt: |
             Review pull request #${{ github.event.pull_request.number }} in ${{ github.repository }} at commit ${{ github.event.pull_request.head.sha }}.
-            The repository is checked out at that commit, and the full diff against the base is in ./.ai-review.diff.
+            The repository is checked out at that commit, and the full diff against the base is in ./.ai-review.diff${{ steps.diff.outputs.more && format(', which is large and continues in {0}', steps.diff.outputs.more) || '' }}.
 
             Read ./.ai-review.diff whole, in one Read call with allow_large: true (it can be larger than Read's
-            default limit, and reading it in parts wastes turns)${{ steps.diff.outputs.rules == 'true' && ', and in the same message read ./.ai-review.rules: the AGENTS.md files as they are on the base branch, each labelled with the directory it covers' || '' }}. Then read as much surrounding code as you need
+            default limit, and reading it in parts wastes turns)${{ steps.diff.outputs.rules == 'true' && ', and in the same message read ./.ai-review.rules: the AGENTS.md files as they are on the base branch, each labelled with the directory it covers' || '' }}. ${{ steps.diff.outputs.more && 'Read every file the diff continues in whole too, each in a Read call of its own in that same message: a script checks the record of your Read calls, and the files of any diff line that no Read returned to you are reported as not reviewed. ' || '' }}Then read as much surrounding code as you need
             to judge each change, including the call sites of anything whose behavior changed. Your tools are
             Read, grep (file contents, extended regex) and glob (file paths); there is no shell. When you need
             several files or searches, request them all in one message as parallel tool calls, because every
@@ -463,10 +487,11 @@ jobs:
           FIRST_FILE: ${{ steps.wrapup.outputs.execution_file && format('{0}/claude-execution-first.json', runner.temp) || '' }}
           TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }} # only compared against the output, which goes to a public comment
           SEARCH_OUTCOME: ${{ steps.search.outcome }}
+          DIFF_PARTS: ${{ steps.diff.outputs.parts }}
         with:
           script: |
             const fs = require('fs');
-            let text = '', verdict = 'unavailable', reason = '', answer = '', first = '', results = [];
+            let text = '', verdict = 'unavailable', reason = '', answer = '', first = '', results = [], outside = [];
             if (process.env.HAS_TOKEN !== 'true') reason = 'the CLAUDE_CODE_OAUTH_TOKEN secret is missing: update the caller';
             else if (process.env.SEARCH_OUTCOME === 'failure') reason = 'the search tools could not be set up: see the workflow run';
             else try {
@@ -513,10 +538,45 @@ jobs:
               // call. A record with no Read block at all is another format and proves nothing, so that fails open.
               const content = (m) => (Array.isArray(m.message?.content) ? m.message.content : []);
               const reads = new Map();
-              for (const m of all) if (m.type === 'assistant') for (const b of content(m)) if (b.type === 'tool_use' && b.name === 'Read') reads.set(b.id, String(b.input?.file_path ?? ''));
-              const readOk = new Set();
-              for (const m of all) if (m.type === 'user') for (const b of content(m)) if (b.type === 'tool_result' && !b.is_error && reads.has(b.tool_use_id)) readOk.add(reads.get(b.tool_use_id));
-              const diffUnread = reads.size > 0 && ![...readOk].some(p => /(^|[/\\])\.ai-review\.diff$/.test(p));
+              for (const m of all) if (m.type === 'assistant') for (const b of content(m)) if (b.type === 'tool_use' && b.name === 'Read') reads.set(b.id, b.input ?? {});
+              // Which lines of which file each successful Read returned. A result line starts with its number,
+              // which says so whatever offset and limit asked for; a result in another format counts from the
+              // offset it asked for.
+              const got = new Map();
+              for (const m of all) if (m.type === 'user') for (const b of content(m)) if (b.type === 'tool_result' && !b.is_error && reads.has(b.tool_use_id)) {
+                const input = reads.get(b.tool_use_id), file = String(input.file_path ?? '');
+                const out = (typeof b.content === 'string' ? b.content : (Array.isArray(b.content) ? b.content : []).map(c => c.text ?? '').join('\n')).split('\n');
+                const numbered = out.map(l => /^\s*(\d+)[\t→]/.exec(l)?.[1]).filter(Boolean).map(Number);
+                const from = Number(input.offset) || 1;
+                if (!got.has(file)) got.set(file, new Set());
+                for (const n of numbered.length ? numbered : out.slice(0, Number(input.limit) || out.length).map((_, i) => from + i)) got.get(file).add(n);
+              }
+              // The review may read the checkout and nothing else. The deny rules keep Read out of /proc, the
+              // dotfiles and the host, but a runner that serves several repositories keeps every checkout under
+              // one home, and nothing else binds Read there. So a successful Read outside the workspace gives no
+              // verdict, and the answer, which may carry what was read, is neither posted nor printed.
+              const { resolve, sep } = require('path');
+              const root = resolve(process.env.GITHUB_WORKSPACE || '.');
+              outside = [...got.keys()].filter(f => { const p = resolve(root, f); return p !== root && !p.startsWith(root + sep); });
+              // The diff is ./.ai-review.diff and the files it continues in, and every line of each must have been
+              // returned by a Read: reading the top of a large diff and stopping is not a review of it. The files
+              // whose lines were not are named, for the session to review itself.
+              const parts = Array.from({ length: Math.max(1, Number(process.env.DIFF_PARTS) || 1) }, (_, i) => (i ? `.ai-review.diff.${i + 1}` : '.ai-review.diff'));
+              const unreadFiles = new Set();
+              let diffLines = 0, diffMissing = 0;
+              for (const part of parts) {
+                const seen = new Set([...got].filter(([f]) => resolve(root, f) === resolve(root, part)).flatMap(([, lines]) => [...lines]));
+                let src = [];
+                try { src = fs.readFileSync(part, 'utf8').split('\n'); } catch { diffMissing = Infinity; }
+                if (src.at(-1) === '') src.pop();
+                let file = '';
+                src.forEach((l, i) => {
+                  file = /^diff --git .*? "?b\/(.*?)"?$/.exec(l)?.[1] ?? file;
+                  diffLines++;
+                  if (!seen.has(i + 1)) { diffMissing++; if (file) unreadFiles.add(file); }
+                });
+              }
+              const diffUnread = reads.size > 0 && diffMissing > 0;
               // The whole answer must be one of the two permitted shapes: a verdict line first, then only finding
               // lines (FINDINGS) or nothing (CLEAN), plus the wrap-up's "Not reviewed" line. A refusal, an
               // injected reply that quotes the format somewhere inside, or any other line gives no verdict.
@@ -543,6 +603,7 @@ jobs:
               if (wrong.length) reason = `answers from ${wrong.join(', ')}, not ${process.env.MODEL}`;
               else if (unlabelled) reason = 'the execution record does not name the model on every answer';
               else if (search?.status !== 'connected') reason = `the search tools did not start (${search?.status ?? 'absent'}): see the workflow run`;
+              else if (outside.length) reason = `the review read ${outside.length === 1 ? 'a file' : `${outside.length} files`} outside the repository: see the workflow run`;
               else if (!result || result.is_error) reason = `no verdict: ${result?.subtype ?? 'no result'}`;
               else if (!shaped) reason = 'the answer did not follow the verdict format: see the workflow run';
               // A first answer that said FINDINGS without one finding line left nothing to carry over below, so a
@@ -562,7 +623,9 @@ jobs:
                   .filter(l => { const file = l.split(' ')[1].split(':')[0]; return !(/[./]/.test(file) && rest.some(r => { const p = (r.split(' ')[2] ?? '').split(':')[0]; return p === file || p.endsWith(`/${file}`); })); });
                 const unread = lines.find(l => /^Not reviewed: /.test(l))?.slice('Not reviewed: '.length).trim();
                 if (unread && unread.toLowerCase() !== 'none') carried.push(`[P1] ${unread} — not reviewed: the review ran out of turns before reading these — review them yourself before merging`);
-                if (diffUnread) carried.push('[P1] .ai-review.diff — not reviewed: the execution record shows no successful Read of the diff — review the pull request yourself before merging');
+                const names = [...unreadFiles];
+                if (diffUnread && diffMissing >= diffLines) carried.push('[P1] .ai-review.diff — not reviewed: the execution record shows no successful Read of the diff — review the pull request yourself before merging');
+                else if (diffUnread) carried.push(`[P1] ${names.slice(0, 30).join(', ') || '.ai-review.diff'}${names.length > 30 ? ` and ${names.length - 30} more` : ''} — not reviewed: the execution record shows no Read of ${diffMissing} of the ${diffLines} lines of the diff, in these files — review them yourself before merging`);
                 if (carried.length) {
                   verdict = 'findings';
                   text = ['VERDICT: FINDINGS', ...anchored, ...carried.map((l, i) => `${rest.length + i + 1}. ${l}`)].join('\n');
@@ -599,8 +662,9 @@ jobs:
               core.info(`${label}\n${scrub(s)}`);
               core.info(`::${stop}::`);
             };
-            if (reason && first) print("Claude's first answer:", first);
-            if (reason && answer) print("Claude's answer:", answer);
+            if (outside.length) core.warning(`Read outside the workspace: ${scrub(outside.join(', '))}`);
+            if (reason && first && !outside.length) print("Claude's first answer:", first);
+            if (reason && answer && !outside.length) print("Claude's answer:", answer);
             core.setOutput('verdict', verdict);
             core.setOutput('reason', scrub(reason));
             core.setOutput('text', scrub(text));
