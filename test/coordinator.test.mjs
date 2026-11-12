@@ -290,7 +290,7 @@ test('no execution file → a warning, nothing to resume', async () => {
 });
 
 // The verdict extractor: a verdict counts only when every answer came from the gate's model.
-const GATE = 'claude-opus-5-5';
+const GATE = 'claude-mythos-5-2';
 const answer = (model = GATE) => ({ type: 'assistant', message: { model, content: [{ type: 'text', text: '…' }] } });
 const done = (text, models = [GATE]) => ({ type: 'result', subtype: 'success', is_error: false, result: text, modelUsage: Object.fromEntries(models.map(m => [m, {}])) });
 const gateInit = (servers = [{ name: 'search', status: 'connected' }]) => ({ type: 'system', subtype: 'init', model: GATE, mcp_servers: servers });
@@ -351,7 +351,7 @@ test('no verdict names its cause from the API error lines, so the session knows 
   const apiError = (text) => ({ type: 'assistant', message: { model: '<synthetic>', content: [{ type: 'text', text }] } });
   const failed = { type: 'result', subtype: 'error_during_execution', is_error: true, modelUsage: { [GATE]: {} } };
   const reason = async (...m) => (await verdict([gateInit(), answer(), ...m, failed])).reason;
-  assert.match(await reason(apiError('API Error: 401 {"type":"error","error":{"type":"authentication_error","message":"OAuth token has expired"}}')), /^answers from <synthetic>, not claude-opus-5-5; the token was rejected/);
+  assert.match(await reason(apiError('API Error: 401 {"type":"error","error":{"type":"authentication_error","message":"OAuth token has expired"}}')), /^answers from <synthetic>, not claude-mythos-5-2; the token was rejected/);
   assert.match(await reason(apiError("API Error: 429 You've hit your limit · resets 3pm")), /; the subscription usage limit was hit/);
   assert.match(await reason(apiError('API Error: 529 {"type":"error","error":{"type":"overloaded_error"}}')), /; the API was unavailable/);
   assert.equal(await reason({ ...failed, result: 'fetch failed' }), 'no verdict: error_during_execution; the API was unavailable (overloaded or a server error): re-run now');
@@ -425,7 +425,7 @@ test('a review without the search server gives no verdict', async () => {
 test('an answer from another model gives no verdict', async () => {
   const r = await verdict([gateInit(), answer('claude-mythos-5-1'), done('VERDICT: CLEAN', [GATE, 'claude-mythos-5-1'])]);
   assert.equal(r.verdict, 'unavailable');
-  assert.match(r.reason, /claude-mythos-5-1, not claude-opus-5-5/);
+  assert.match(r.reason, /claude-mythos-5-1, not claude-mythos-5-2/);
 });
 
 test('a missing token is named as the reason', async () => {
