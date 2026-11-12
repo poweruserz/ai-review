@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
 const read = (f) => readFileSync(new URL(`../${f}`, import.meta.url), 'utf8');
-const workflows = ['.github/workflows/review.yml', '.github/workflows/nudge-codex.yml', '.github/workflows/ai-review.yml', 'caller.yml'];
+const workflows = ['.github/workflows/review.yml', '.github/workflows/nudge-codex.yml', '.github/workflows/test.yml', '.github/workflows/ai-review.yml', 'caller.yml'];
 const review = read('.github/workflows/review.yml');
 const lines = review.split('\n');
 // The text of one job: from its name at two-space indent to the next.

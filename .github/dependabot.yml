@@ -1,0 +1,10 @@
+# Keeps the Claude action's pin in review.yml current: the Claude Code an old release installs does not know newer
+# models (see the comment at that pin). Only that action; the others are bumped by hand.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: daily
+    allow:
+      - dependency-name: anthropics/claude-code-action
