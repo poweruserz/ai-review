@@ -53,4 +53,4 @@ The caller tracks `@main`, so a change here reaches every repository at once. Th
 node --test
 ```
 
-The tests take the coordinator's decision script straight out of `review.yml` and run it against fake GitHub data.
+The tests take the coordinator's decision script straight out of `review.yml` and run it against fake GitHub data. [`test.yml`](.github/workflows/test.yml) runs them on every pull request here and on a push to `main`. The ruleset does not require that check: it is the same file for every repository, and only this one has tests.

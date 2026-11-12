@@ -1,0 +1,30 @@
+name: Test
+
+# A pull request here that changes review.yml is reviewed by the review.yml on main, not by its own, so the tests
+# are the only check of the new logic before it is live in every enrolled repository. They need no secret, so they
+# also run on Dependabot and fork pull requests, which get no ai-review status.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions: {}
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - run: node --test
