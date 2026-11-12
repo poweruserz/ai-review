@@ -554,10 +554,13 @@ jobs:
               // The review may read the checkout and nothing else. The deny rules keep Read out of /proc, the
               // dotfiles and the host, but a runner that serves several repositories keeps every checkout under
               // one home, and nothing else binds Read there. So a successful Read outside the workspace gives no
-              // verdict, and the answer, which may carry what was read, is neither posted nor printed.
-              const { resolve, sep } = require('path');
+              // verdict, and the answer, which may carry what was read, is neither posted nor printed. Only an
+              // absolute path is judged, which is what Read asks for and what all 642 Reads of the 2026-11-12
+              // measurement used: how Read would expand `~/…` or resolve anything else is not this script's to
+              // guess, so a successful Read by any other path counts as outside.
+              const { resolve, sep, isAbsolute } = require('path');
               const root = resolve(process.env.GITHUB_WORKSPACE || '.');
-              outside = [...got.keys()].filter(f => { const p = resolve(root, f); return p !== root && !p.startsWith(root + sep); });
+              outside = [...got.keys()].filter(f => { const p = resolve(root, f); return !isAbsolute(f) || (p !== root && !p.startsWith(root + sep)); });
               // The diff is ./.ai-review.diff and the files it continues in, and every line of each must have been
               // returned by a Read: reading the top of a large diff and stopping is not a review of it. The files
               // whose lines were not are named, for the session to review itself.

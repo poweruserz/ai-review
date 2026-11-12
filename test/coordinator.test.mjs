@@ -398,11 +398,15 @@ test('a successful Read outside the workspace gives no verdict, and the answer i
   assert.equal(out.text, '');
   assert.ok(!out.info.some(l => l.includes('VERDICT')), 'the answer may carry what was read');
   assert.deepEqual(out.warnings.slice(-1), ['Read outside the workspace: /home/gha-review/runners/other/_work/other/other/config.php']);
-  // Climbing out with dot-dot is outside too; a path inside, absolute or relative, is not, nor is a refused Read.
+  // Climbing out with dot-dot is outside too; an absolute path that stays inside is not, nor is a refused Read.
   assert.equal((await run('/w/src/../../other/a.js')).verdict, 'unavailable');
   assert.equal((await run('/w/src/../a.js')).verdict, 'clean');
-  assert.equal((await run('src/a.js')).verdict, 'clean');
   assert.equal((await run('/etc/passwd', false)).verdict, 'clean');
+  // A path that is not absolute is not judged at all: Read may expand `~` to the home directory, where the other
+  // checkouts are, while this script would see a directory of that name inside the workspace.
+  assert.equal((await run('~/runners/other/_work/other/other/config.php')).verdict, 'unavailable');
+  assert.equal((await run('src/a.js')).verdict, 'unavailable');
+  assert.equal((await run('./.ai-review.diff', '1\tx\n2\tx')).verdict, 'unavailable');
 });
 
 test('no verdict names its cause from the API error lines, so the session knows whether to renew, wait or re-run', async () => {
