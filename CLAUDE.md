@@ -29,6 +29,13 @@ Two scripts act on GitHub for real and have no dry run. Both need `gh` signed in
 
 `node scripts/review-outcomes.mjs [account] [since] [--list]` only reads. It counts what became of Claude's findings in real pull requests (acted on, rejected, dropped, left open), which is what a gate model is judged by next to the 8-bug benchmark; the README holds the last count. With `--list` it names private repositories, so that output stays off public pages.
 
+## Upkeep
+
+The owner handed these two to the session on 2026-11-12. When you work here, check whether one is due.
+
+- Dependabot's bump of the Claude action. Dependabot proposes a release once it is 3 days old and keeps one pull request open for the newest. That pull request gets no `ai-review` status, so it could only merge with a bypass, and a bypass is not the way. Read what the release changed (`gh api repos/anthropics/claude-code-action/compare/<old sha>...<new sha>`), put the same change (the two `uses:` lines in `review.yml`) on a branch of your own, point a canary pull request in the owner's private test repository at that branch and check that the review gives a verdict from the gate model and finds the planted bugs, then open a pull request here, which is reviewed and merged like any other. Dependabot closes its own once the pin has moved.
+- The count of what became of Claude's findings. A few weeks after a change of gate model, run `node scripts/review-outcomes.mjs <account> <the day after the change>` and put the numbers next to the last ones in the README.
+
 ## Where a change lands
 
 - Callers use `review.yml@main`, so a merge to `main` is live in every enrolled repository at once, with their secrets. Merging is the deploy. Treat `main` as production.
