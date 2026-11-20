@@ -330,7 +330,7 @@ jobs:
         # .github/dependabot.yml in poweruserz/ai-review proposes each new release, and its change is merged there
         # through a reviewed pull request (see the README). Not the tag v1: that would run each new release next to
         # the token in every enrolled repository before anyone had looked at it.
-        uses: anthropics/claude-code-action@4fa93a88de49bbef68b10eb15aabedf28ca0e1ed # v1.0.271
+        uses: anthropics/claude-code-action@cc98b3ae241b0fcfb6a42a2690751afffecb4452 # v1.0.278
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ github.token }}
@@ -456,7 +456,7 @@ jobs:
         if: ${{ !cancelled() && steps.session.outputs.id }}
         continue-on-error: true
         timeout-minutes: 10
-        uses: anthropics/claude-code-action@4fa93a88de49bbef68b10eb15aabedf28ca0e1ed # v1.0.271
+        uses: anthropics/claude-code-action@cc98b3ae241b0fcfb6a42a2690751afffecb4452 # v1.0.278
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ github.token }}
